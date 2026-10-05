@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 mod branding;
 mod commands;
+mod ndjson;
 mod score;
 pub mod vulndb;
 pub mod zk;
