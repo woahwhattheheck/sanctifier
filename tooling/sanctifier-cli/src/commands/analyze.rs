@@ -574,7 +574,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 &mut writer,
                 "finding",
                 Some("vulnerability_db_matches"),
-                finding,
+                &serde_json::json!({
+                    "code": finding.vuln_id,
+                    "finding": finding,
+                }),
             )?;
         }
 
