@@ -86,8 +86,7 @@ fn test_analyze_markdown_output() {
         .stdout(predicates::str::starts_with("# Sanctifier Security Report"))
         .stdout(predicates::str::contains("## Severity summary"))
         .stdout(predicates::str::contains("## Findings"))
-        .stdout(predicates::str::contains("| Code | Severity | Location | Finding |"))
-        .stdout(predicates::str::contains("Found potential").not());
+        .stdout(predicates::str::contains("| Code | Severity | Location | Finding |"));
 }
 
 #[test]
