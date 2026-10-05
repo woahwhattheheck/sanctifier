@@ -46,6 +46,14 @@ pub struct AnalyzeArgs {
     /// Abort the scan if peak RSS exceeds this limit (in MB).
     #[arg(long)]
     pub max_memory: Option<u64>,
+
+    /// Watch source files and re-run analysis after debounced changes
+    #[arg(long)]
+    pub watch: bool,
+
+    /// Debounce window in milliseconds used by --watch
+    #[arg(long, default_value = "300", requires = "watch")]
+    pub debounce: u64,
 }
 
 pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
