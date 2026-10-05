@@ -99,6 +99,12 @@ fn test_analyze_ndjson_stream_is_line_delimited() {
         record["schema"].as_str() == Some("sanctifier-ndjson-v1")
     }));
     assert!(records.iter().any(|record| record["type"] == "finding"));
+    assert!(records
+        .iter()
+        .filter(|record| record["type"] == "finding")
+        .all(|record| {
+            record["data"]["code"].is_string() && !record["data"]["finding"].is_null()
+        }));
 }
 
 #[test]
