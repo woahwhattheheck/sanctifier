@@ -338,7 +338,7 @@ impl Default for SanctifyConfig {
 impl SanctifyConfig {
     fn legacy_rule_alias(rule_name: &str) -> Option<&'static str> {
         match rule_name {
-            "auth_gap" => Some("auth_gaps"),
+            "auth_gap" | "sanct_visibility" => Some("auth_gaps"),
             "panic_detection" => Some("panics"),
             "arithmetic_overflow" => Some("arithmetic"),
             "ledger_size" => Some("ledger_size"),
