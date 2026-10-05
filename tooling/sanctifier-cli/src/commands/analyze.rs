@@ -52,7 +52,7 @@ pub struct AnalyzeArgs {
     pub watch: bool,
 
     /// Debounce window in milliseconds used by --watch
-    #[arg(long, default_value = "300", requires = "watch")]
+    #[arg(long, default_value = "300")]
     pub debounce: u64,
 }
 
