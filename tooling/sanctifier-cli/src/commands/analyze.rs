@@ -123,7 +123,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     // Load vulnerability database
     let vuln_db = match &args.vuln_db {
         Some(db_path) => {
-            if !is_json {
+            if !is_machine_readable {
                 println!(
                     "{} Loading custom vulnerability database from {:?}",
                     "📦".blue(),
@@ -133,7 +133,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             VulnDatabase::load(db_path)?
         }
         None => {
-            if !is_json {
+            if !is_machine_readable {
                 println!(
                     "{} Loading built-in vulnerability database (v{})",
                     "📦".blue(),
@@ -220,13 +220,13 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     if let Some((code, justification)) = rest.split_once('-') {
                         let justification = justification.trim();
                         if justification.is_empty() {
-                            if !is_json {
+                            if !is_machine_readable {
                                 eprintln!("{} Warning: Inline suppression missing justification at {}:{}", "⚠️".yellow(), file_path, i + 1);
                             }
                         } else {
                             supps.push((i + 1, code.trim().to_string(), justification.to_string()));
                         }
-                    } else if !is_json {
+                    } else if !is_machine_readable {
                         eprintln!("{} Warning: Inline suppression missing justification at {}:{}", "⚠️".yellow(), file_path, i + 1);
                     }
                 }
@@ -428,7 +428,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             }
             Ok(None) => (0, vec![]),
             Err(e) => {
-                if !is_json {
+                if !is_machine_readable {
                     eprintln!("{} Could not read baseline: {}", "⚠️".yellow(), e);
                 }
                 (0, vec![])
@@ -499,7 +499,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     }
 
     // ── Baseline summary (text mode) ─────────────────────────────────────────
-    if !is_json && suppressed_count > 0 {
+    if !is_machine_readable && suppressed_count > 0 {
         println!(
             "{} {} finding{} suppressed by baseline (run {} to see all)",
             "ℹ️".blue(),
@@ -508,7 +508,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             "sanctifier analyze --no-baseline".bold(),
         );
     }
-    if !is_json && !stale_entries.is_empty() {
+    if !is_machine_readable && !stale_entries.is_empty() {
         println!(
             "{} {} stale baseline entr{} (no longer present in the codebase):",
             "ℹ️".blue(),
