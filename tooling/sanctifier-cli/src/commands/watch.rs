@@ -1,3 +1,4 @@
+use crate::commands::analyze::AnalyzeArgs;
 use clap::Args;
 use colored::*;
 use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
@@ -45,15 +46,30 @@ fn is_rs_event(event: &notify::Event) -> bool {
 /// Run `sanctifier watch`: re-run analysis whenever a `.rs` file under `path`
 /// changes, debounced, until interrupted with Ctrl-C.
 pub fn exec(args: WatchArgs) -> anyhow::Result<()> {
-    if !args.path.exists() {
-        anyhow::bail!("path {:?} does not exist", args.path);
+    let path = args.path.clone();
+    watch_loop(&path, args.debounce, || run_analysis(&args))
+}
+
+/// Run analyze --watch using the same watcher/debounce loop while preserving
+/// the complete analyze invocation across each child-process rerun.
+pub fn exec_analyze(args: AnalyzeArgs) -> anyhow::Result<()> {
+    let path = args.path.clone();
+    watch_loop(&path, args.debounce, || run_analyze_args(&args))
+}
+
+fn watch_loop<F>(path: &Path, debounce_ms: u64, mut run: F) -> anyhow::Result<()>
+where
+    F: FnMut(),
+{
+    if !path.exists() {
+        anyhow::bail!("path {:?} does not exist", path);
     }
 
     let (tx, rx) = channel::<WatchEvent>();
     let mut watcher = recommended_watcher(move |res| {
         let _ = tx.send(res);
     })?;
-    watcher.watch(&args.path, RecursiveMode::Recursive)?;
+    watcher.watch(path, RecursiveMode::Recursive)?;
 
     // Ctrl-C flips this flag; the loop polls it so shutdown is cooperative and
     // the watcher/Drop runs cleanly instead of the process being hard-killed.
@@ -65,21 +81,21 @@ pub fn exec(args: WatchArgs) -> anyhow::Result<()> {
     }
 
     // Show results immediately, before the first change.
-    run_analysis(&args);
-    print_watching(&args.path);
+    run();
+    print_watching(path);
 
     while !shutdown.load(Ordering::SeqCst) {
         // Poll so Ctrl-C is observed even while idle.
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Ok(event)) if is_rs_event(&event) => {
-                debounce(&rx, args.debounce, &shutdown);
+                debounce(&rx, debounce_ms, &shutdown);
                 if shutdown.load(Ordering::SeqCst) {
                     break;
                 }
-                run_analysis(&args);
-                print_watching(&args.path);
+                run();
+                print_watching(path);
             }
-            Ok(_) => {} // unrelated event or a watch error — ignore
+            Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -132,13 +148,53 @@ fn run_analysis(args: &WatchArgs) {
 
     let status = Command::new(exe)
         .arg("analyze")
-        .arg("--path")
         .arg(&args.path)
         .arg("--format")
         .arg(&args.format)
         .status();
 
     if let Err(e) = status {
+        eprintln!("{} failed to run analysis: {e}", "❌".red());
+    }
+}
+
+fn run_analyze_args(args: &AnalyzeArgs) {
+    clear_screen();
+
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("{} could not locate sanctifier binary: {e}", "❌".red());
+            return;
+        }
+    };
+
+    let mut command = Command::new(exe);
+    command
+        .arg("analyze")
+        .arg(&args.path)
+        .arg("--format")
+        .arg(&args.format)
+        .arg("--limit")
+        .arg(args.limit.to_string());
+
+    if let Some(vuln_db) = &args.vuln_db {
+        command.arg("--vuln-db").arg(vuln_db);
+    }
+    for webhook_url in &args.webhook_urls {
+        command.arg("--webhook-url").arg(webhook_url);
+    }
+    if args.no_baseline {
+        command.arg("--no-baseline");
+    }
+    if args.profile {
+        command.arg("--profile");
+    }
+    if let Some(max_memory) = args.max_memory {
+        command.arg("--max-memory").arg(max_memory.to_string());
+    }
+
+    if let Err(e) = command.status() {
         eprintln!("{} failed to run analysis: {e}", "❌".red());
     }
 }
