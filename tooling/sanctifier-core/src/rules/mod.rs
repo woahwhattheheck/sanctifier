@@ -30,6 +30,7 @@ pub mod sep41_approval_expiration;
 pub mod shift_overflow;
 pub mod state_write_in_view;
 pub mod tier_boundary_off_by_one;
+pub mod ttl_extend_misconfig;
 pub mod unbounded_event_emission;
 pub mod unbounded_input_length;
 pub mod unbounded_return;
@@ -141,7 +142,7 @@ impl RuleRegistry {
 
         // Macro-expansion-aware pass: analyse logic hidden behind simple local
         // `macro_rules!` wrappers so it isn't a false negative. The expansion is
-        // additive — findings already visible in the original source are
+        // additive  findings already visible in the original source are
         // de-duplicated by (rule, message), and code with no expandable macros
         // is left completely unchanged.
         if let Some(expanded) = crate::macro_expand::expand_local_macros(source) {
@@ -183,11 +184,11 @@ impl RuleRegistry {
             .collect()
     }
 
-    /// Like `run_all`, but also returns how long each rule took to run —
+    /// Like `run_all`, but also returns how long each rule took to run 
     /// useful for spotting a pathologically slow detector on a large file.
     ///
     /// Scope limitation: unlike `run_all`, this does not perform any
-    /// macro-expansion second pass — it only measures per-rule cost on the
+    /// macro-expansion second pass  it only measures per-rule cost on the
     /// primary source, which is the useful diagnostic signal for timing.
     pub fn run_all_with_timings(&self, source: &str) -> (Vec<RuleViolation>, Vec<RuleTiming>) {
         let mut violations = Vec::new();
@@ -204,7 +205,7 @@ impl RuleRegistry {
         (violations, timings)
     }
 
-    /// Rules from `timings` whose duration exceeded `threshold` — a simple
+    /// Rules from `timings` whose duration exceeded `threshold`  a simple
     /// slow-rule diagnostic so a pathological detector doesn't silently eat
     /// scan time.
     pub fn slow_rules(timings: &[RuleTiming], threshold: std::time::Duration) -> Vec<&RuleTiming> {
@@ -249,6 +250,7 @@ impl RuleRegistry {
         registry.register(unsigned_underflow::UnsignedUnderflowRule::new());
         registry.register(ledger_seconds::LedgerSecondsRule::new());
         registry.register(tier_boundary_off_by_one::TierBoundaryOffByOneRule::new());
+        registry.register(ttl_extend_misconfig::TtlExtendMisconfigRule::new());
         registry.register(unbounded_return::UnboundedReturnRule::new());
         registry.register(reserve_withdrawal::ReserveWithdrawalRule::new());
         registry.register(contracterror_enum::ContracterrorEnumRule::new());
