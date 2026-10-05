@@ -718,7 +718,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         for custom in &custom_matches {
             rows.push((
                 finding_codes::CUSTOM_RULE_MATCH.to_string(),
-                custom.severity.clone(),
+                format!("{:?}", custom.severity).to_lowercase(),
                 format!("line {}", custom.line),
                 format!("{} — {}", custom.rule_name, custom.snippet),
             ));
