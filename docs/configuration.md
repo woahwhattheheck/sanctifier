@@ -88,8 +88,8 @@ identifiers are:
 | `events` | Inconsistent event topic counts / gas patterns | `S008` |
 | `invariants` | Declared `#[sanctify::invariant]` checks (see [`verify`](cli.md#sanctifier-verify)) | `S011` |
 
-The legacy names remain supported for the original one-to-one registry rules:
-`auth_gaps` → `auth_gap`, `panics` → `panic_detection`,
+The legacy names remain supported for the original registry families:
+`auth_gaps` → `auth_gap` + `sanct_visibility`, `panics` → `panic_detection`,
 `arithmetic` → `arithmetic_overflow`, and `ledger_size` → `ledger_size`.
 Newer registry rules keep their historical enabled-by-default behavior unless
 you set an exact [`rules.<name>`](#rules) override.
@@ -232,8 +232,8 @@ need. Every key is shown with its default.
 # Directory name fragments to skip while scanning (substring match).
 ignore_paths = ["target", ".git", "test_snapshots"]
 
-# Detector families you intend to run (see the configuration reference for the
-# current behaviour note — built-in detectors run regardless today).
+# Legacy detector families. Exact `[rules.<name>] enabled = ...` entries
+# override the mapped family decision for registry-backed rules.
 enabled_rules = ["auth_gaps", "panics", "arithmetic", "ledger_size", "events"]
 
 # Exact registry rule overrides take precedence over the legacy allow-list.
