@@ -466,6 +466,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         || size_warnings
             .iter()
             .any(|w| w.level == SizeWarningLevel::ExceedsLimit);
+    // Keep process semantics independent of output format. High/critical
+    // findings are the existing analysis gate; lower-severity findings remain
+    // report-only.
+    let exit_code = if has_critical || has_high { 1 } else { 0 };
     let timestamp = chrono_timestamp();
 
     let webhook_payload = ScanWebhookPayload {
@@ -540,7 +544,9 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             },
             "error_codes": finding_codes::all_finding_codes(),
             "summary": {
+                "exit_code": exit_code,
                 "total_findings": total_findings,
+                "suppressed_findings": suppressed_count,
                 "storage_collisions": collisions.len(),
                 "auth_gaps": auth_gaps.len(),
                 "panic_issues": panic_issues.len(),
@@ -642,8 +648,8 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             );
         }
 
-        if has_critical || has_high {
-            std::process::exit(1);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
         }
         return Ok(());
     }
@@ -839,6 +845,15 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             snap.current_rss_kb / 1024,
             snap.peak_rss_kb / 1024
         );
+    }
+
+    println!(
+        "SANCTIFIER_SUMMARY exit_code={} total_findings={} suppressed_findings={} has_critical={} has_high={}",
+        exit_code, total_findings, suppressed_count, has_critical, has_high
+    );
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 
     Ok(())
