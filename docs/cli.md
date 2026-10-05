@@ -99,6 +99,10 @@ Analyze a Soroban contract for vulnerabilities
 * `--no-baseline` — Ignore .sanctify-baseline.json and report all findings
 * `--profile` — Profile peak memory usage and report it at the end of the scan
 * `--max-memory <MAX_MEMORY>` — Abort the scan if peak RSS exceeds this limit (in MB)
+* `--watch` — Watch source files and re-run analysis after debounced changes
+* `--debounce <DEBOUNCE>` — Debounce window in milliseconds used by --watch
+
+  Default value: `300`
 
 
 
