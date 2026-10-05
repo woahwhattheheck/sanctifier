@@ -3,7 +3,7 @@
 Sanctifier now uses a unified finding code system across `sanctifier-core` and `sanctifier-cli` outputs.
 
 Each code emitted by a detector links to its full page in the
-[Detector Catalog](detectors/README.md) — what it catches, a vulnerable example,
+[Detector Catalog](detectors/README.md)  what it catches, a vulnerable example,
 the fix, and references.
 
 | Code | Category | Meaning | Detector page |
@@ -12,9 +12,10 @@ the fix, and references.
 | `S002` | panic_handling | `panic!` / `unwrap` / `expect` usage that may abort execution | [`panic_detection`](detectors/panic_detection.md) |
 | `S003` | arithmetic | Unchecked arithmetic with overflow/underflow risk | [`arithmetic_overflow`](detectors/arithmetic_overflow.md) |
 | `S004` | storage_limits | Ledger entry size exceeds or approaches configured limits | [`ledger_size`](detectors/ledger_size.md) |
-| `S005` | storage_keys | Potential storage key collision | — |
+| `S005` | storage_keys | Potential storage key collision |  |
 | `S006` | storage_durability | Persistent/instance storage access without a TTL extension | [`missing_ttl`](detectors/missing_ttl.md) |
-| `S007` | custom_rule | User-defined custom rule match | — |
+| `SANCT_TTL_EXTEND_MISCONFIG` | storage_durability | `extend_ttl` threshold is greater than or equal to its target TTL | [`ttl_extend_misconfig`](detectors/ttl_extend_misconfig.md) |
+| `S007` | custom_rule | User-defined custom rule match |  |
 | `S009` | logic | A `Result` that is silently dropped | [`unhandled_result`](detectors/unhandled_result.md) |
 | `S012` | code_hygiene | Hardcoded admin address / secret literal in an auth context | [`hardcoded_addr`](detectors/hardcoded_addr.md) |
 | `S013` | code_hygiene | `transfer`/`mint`/`burn` missing `amount > 0` / `from != to` guards | [`edge_amount`](detectors/edge_amount.md) |
@@ -36,7 +37,7 @@ the fix, and references.
 | `SANCT_VK_PROVENANCE` | cryptography | ZK verifying key accepted at runtime and stored with no auth/hash-pin guard | [`vk_provenance`](detectors/vk_provenance.md) |
 | `SANCT_PUBLIC_INPUT_UNVALIDATED` | zk_verification | Verification consumes public inputs without checking they are canonical field elements in range | [`public_input_range`](detectors/public_input_range.md) |
 
-> **Full catalog:** [Detector Catalog →](detectors/README.md)
+> **Full catalog:** [Detector Catalog!�](detectors/README.md)
 
 ### Source-optional (compiled WASM) codes
 
