@@ -12,6 +12,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::ndjson;
 use crate::vulndb::{VulnDatabase, VulnMatch};
 
 #[derive(Args, Debug)]
@@ -20,7 +21,7 @@ pub struct AnalyzeArgs {
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
-    /// Output format (text, json)
+    /// Output format (text, json, ndjson)
     #[arg(short, long, default_value = "text")]
     pub format: String,
 
@@ -53,6 +54,8 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     let format = &args.format;
     let _limit = args.limit;
     let is_json = format == "json";
+    let is_ndjson = format == "ndjson";
+    let is_machine_readable = is_json || is_ndjson;
 
     if !is_soroban_project(path) {
         if is_json {
@@ -61,6 +64,18 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 "success": false,
             });
             println!("{}", serde_json::to_string_pretty(&err)?);
+        } else if is_ndjson {
+            let stdout = io::stdout();
+            let mut writer = stdout.lock();
+            ndjson::write_record(
+                &mut writer,
+                "error",
+                None,
+                &serde_json::json!({
+                    "success": false,
+                    "error": format!("{:?} is not a valid Soroban project", path),
+                }),
+            )?;
         } else {
             eprintln!(
                 "{} Error: {:?} is not a valid Soroban project. (Missing Cargo.toml with 'soroban-sdk' dependency)",
@@ -71,7 +86,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    if is_json {
+    if is_machine_readable {
         eprintln!(
             "{} Sanctifier: Valid Soroban project found at {:?}",
             "✨".green(),
