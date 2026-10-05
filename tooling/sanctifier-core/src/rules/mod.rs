@@ -142,7 +142,7 @@ impl RuleRegistry {
 
         // Macro-expansion-aware pass: analyse logic hidden behind simple local
         // `macro_rules!` wrappers so it isn't a false negative. The expansion is
-        // additive  findings already visible in the original source are
+        // additive — findings already visible in the original source are
         // de-duplicated by (rule, message), and code with no expandable macros
         // is left completely unchanged.
         if let Some(expanded) = crate::macro_expand::expand_local_macros(source) {
@@ -184,11 +184,11 @@ impl RuleRegistry {
             .collect()
     }
 
-    /// Like `run_all`, but also returns how long each rule took to run 
+    /// Like `run_all`, but also returns how long each rule took to run —
     /// useful for spotting a pathologically slow detector on a large file.
     ///
     /// Scope limitation: unlike `run_all`, this does not perform any
-    /// macro-expansion second pass  it only measures per-rule cost on the
+    /// macro-expansion second pass — it only measures per-rule cost on the
     /// primary source, which is the useful diagnostic signal for timing.
     pub fn run_all_with_timings(&self, source: &str) -> (Vec<RuleViolation>, Vec<RuleTiming>) {
         let mut violations = Vec::new();
@@ -205,7 +205,7 @@ impl RuleRegistry {
         (violations, timings)
     }
 
-    /// Rules from `timings` whose duration exceeded `threshold`  a simple
+    /// Rules from `timings` whose duration exceeded `threshold` — a simple
     /// slow-rule diagnostic so a pathological detector doesn't silently eat
     /// scan time.
     pub fn slow_rules(timings: &[RuleTiming], threshold: std::time::Duration) -> Vec<&RuleTiming> {
