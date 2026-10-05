@@ -1555,12 +1555,16 @@ mod tests {
 
     struct ConfigurableRule {
         name: &'static str,
+        panic_on_check: bool,
     }
 
     impl Rule for ConfigurableRule {
         fn name(&self) -> &str { self.name }
         fn description(&self) -> &str { "test-only configurable rule" }
         fn check(&self, _source: &str) -> Vec<RuleViolation> {
+            if self.panic_on_check {
+                panic!("disabled rule was executed");
+            }
             vec![RuleViolation::new(
                 self.name,
                 Severity::Warning,
@@ -1571,9 +1575,16 @@ mod tests {
         fn as_any(&self) -> &dyn std::any::Any { self }
     }
 
-    fn configurable_analyzer(config: SanctifyConfig, name: &'static str) -> Analyzer {
+    fn configurable_analyzer(
+        config: SanctifyConfig,
+        name: &'static str,
+        panic_on_check: bool,
+    ) -> Analyzer {
         let mut registry = RuleRegistry::new();
-        registry.register(ConfigurableRule { name });
+        registry.register(ConfigurableRule {
+            name,
+            panic_on_check,
+        });
         Analyzer::with_rules(config, registry)
     }
 
@@ -1584,7 +1595,7 @@ mod tests {
             "unused_variable".to_string(),
             RuleConfig { enabled: Some(false), severity: None },
         );
-        assert!(configurable_analyzer(config, "unused_variable")
+        assert!(configurable_analyzer(config, "unused_variable", true)
             .run_rules("unused")
             .is_empty());
     }
@@ -1596,7 +1607,7 @@ mod tests {
             "unused_variable".to_string(),
             RuleConfig { enabled: None, severity: Some(RuleSeverity::Error) },
         );
-        let findings = configurable_analyzer(config, "unused_variable").run_rules("unused");
+        let findings = configurable_analyzer(config, "unused_variable", false).run_rules("unused");
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, Severity::Error);
     }
@@ -1605,7 +1616,7 @@ mod tests {
     fn exact_enabled_override_wins_over_legacy_allow_list() {
         let mut config = SanctifyConfig::default();
         config.enabled_rules.retain(|name| name != "panics");
-        assert!(configurable_analyzer(config.clone(), "panic_detection")
+        assert!(configurable_analyzer(config.clone(), "panic_detection", false)
             .run_rules("unused")
             .is_empty());
 
@@ -1614,7 +1625,7 @@ mod tests {
             RuleConfig { enabled: Some(true), severity: None },
         );
         assert_eq!(
-            configurable_analyzer(config, "panic_detection")
+            configurable_analyzer(config, "panic_detection", false)
                 .run_rules("unused")
                 .len(),
             1
