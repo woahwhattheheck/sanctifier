@@ -6,9 +6,9 @@
 //! output fails the build until the snapshot is re-reviewed.
 //!
 //! Workflow:
-//!   * `cargo insta test`    run the snapshot tests.
-//!   * `cargo insta review`  interactively accept/reject pending changes.
-//!   * `cargo insta accept`  accept all pending changes (use with care).
+//!   * `cargo insta test`   — run the snapshot tests.
+//!   * `cargo insta review` — interactively accept/reject pending changes.
+//!   * `cargo insta accept` — accept all pending changes (use with care).
 //!
 //! See `tooling/sanctifier-core/tests/README.md` for the full guide.
 
