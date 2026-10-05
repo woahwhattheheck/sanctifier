@@ -53,8 +53,19 @@ pub fn exec(args: WatchArgs) -> anyhow::Result<()> {
 /// Run analyze --watch using the same watcher/debounce loop while preserving
 /// the complete analyze invocation across each child-process rerun.
 pub fn exec_analyze(args: AnalyzeArgs) -> anyhow::Result<()> {
-    let path = args.path.clone();
-    watch_loop(&path, args.debounce, || run_analyze_args(&args))
+    let watch_path = analyze_watch_target(&args.path).to_path_buf();
+    watch_loop(&watch_path, args.debounce, || run_analyze_args(&args))
+}
+
+/// Analyze accepts a Cargo.toml path as well as a directory or Rust file.
+/// Watching only the manifest would miss source edits, so watch its containing
+/// project directory while preserving the original path for each analysis run.
+fn analyze_watch_target(path: &Path) -> &Path {
+    if path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml") {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    }
 }
 
 fn watch_loop<F>(path: &Path, debounce_ms: u64, mut run: F) -> anyhow::Result<()>
@@ -216,6 +227,18 @@ fn print_watching(path: &Path) {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, Event, EventKind, ModifyKind};
+
+    #[test]
+    fn manifest_watch_targets_project_directory() {
+        assert_eq!(
+            analyze_watch_target(Path::new("contracts/token/Cargo.toml")),
+            Path::new("contracts/token")
+        );
+        assert_eq!(
+            analyze_watch_target(Path::new("contracts/token/src/lib.rs")),
+            Path::new("contracts/token/src/lib.rs")
+        );
+    }
 
     #[test]
     fn detects_rs_modifications() {
