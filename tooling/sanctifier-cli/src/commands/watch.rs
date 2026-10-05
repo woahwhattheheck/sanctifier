@@ -20,7 +20,7 @@ pub struct WatchArgs {
     #[arg(short, long, default_value = "300")]
     pub debounce: u64,
 
-    /// Output format passed through to `analyze` (text | json)
+    /// Output format passed through to `analyze` (text | json | ndjson)
     #[arg(short, long, default_value = "text")]
     pub format: String,
 }
