@@ -569,6 +569,14 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             emit_findings!("upgrade_risks", finding_codes::UPGRADE_RISK, &report.findings);
         }
         emit_findings!("smt_issues", finding_codes::SMT_INVARIANT_VIOLATION, &smt_issues);
+        for finding in &vuln_matches {
+            ndjson::write_record(
+                &mut writer,
+                "finding",
+                Some("vulnerability_db_matches"),
+                finding,
+            )?;
+        }
 
         ndjson::write_record(
             &mut writer,
@@ -586,6 +594,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 "event_issues": event_issues.len(),
                 "unhandled_results": unhandled_results.len(),
                 "smt_issues": smt_issues.len(),
+                "vulnerability_db_matches": vuln_matches.len(),
                 "has_critical": has_critical,
                 "has_high": has_high,
                 "baseline": {
