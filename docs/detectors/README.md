@@ -4,7 +4,7 @@
   Every detector registered in RuleRegistry::with_default_rules()
   (tooling/sanctifier-core/src/rules/mod.rs) MUST have a page in this directory
   named `<detector_name>.md`, and MUST appear in the table below. This is
-  enforced in CI by tests/detector_docs_coverage.rs  if you add a detector,
+  enforced in CI by tests/detector_docs_coverage.rs — if you add a detector,
   add its page here or the build fails.
 -->
 
@@ -27,7 +27,6 @@ detector page and to the relevant [Glossary](../glossary.md) term.
 | [`arithmetic_overflow`](arithmetic_overflow.md) | [`S003`](../error-codes.md) | arithmetic | High | Unchecked `+` `-` `*` that can overflow or underflow |
 | [`ledger_size`](ledger_size.md) | [`S004`](../error-codes.md) | storage_limits | Medium | `contracttype` layouts approaching the ledger entry size limit |
 | [`missing_ttl`](missing_ttl.md) | [`S006`](../error-codes.md) | storage_durability | Medium | Persistent/instance storage access without a TTL extension |
-| [`ttl_extend_misconfig`](ttl_extend_misconfig.md) | [`SANCT_TTL_EXTEND_MISCONFIG`](../error-codes.md) | storage_durability | Medium | `extend_ttl` uses a threshold greater than or equal to its target TTL |
 | [`ttl_extend_misconfig`](ttl_extend_misconfig.md) | [`SANCT_TTL_EXTEND_MISCONFIG`](../error-codes.md) | storage_durability | Medium | `extend_ttl` uses a threshold greater than or equal to its target TTL |
 | [`unhandled_result`](unhandled_result.md) | [`S009`](../error-codes.md) | logic | Medium | A `Result` that is silently dropped |
 | [`hardcoded_addr`](hardcoded_addr.md) | [`S012`](../error-codes.md) | code_hygiene | High | Hardcoded admin address / secret literal in an auth context |
@@ -71,16 +70,16 @@ detector page and to the relevant [Glossary](../glossary.md) term.
 
 Every detector page follows the same structure so they read as one body of work:
 
-1. **Summary**  the code, category, severity, and the source rule.
-2. **What it catches**  the vulnerability class in one paragraph.
-3. **Vulnerable example**  a minimal Soroban contract that trips the detector.
-4. **The fix**  the same contract, corrected.
-5. **How Sanctifier detects it**  the analysis technique, and its limits.
-6. **References**  Soroban docs, CWE entries, and related detectors.
+1. **Summary** — the code, category, severity, and the source rule.
+2. **What it catches** — the vulnerability class in one paragraph.
+3. **Vulnerable example** — a minimal Soroban contract that trips the detector.
+4. **The fix** — the same contract, corrected.
+5. **How Sanctifier detects it** — the analysis technique, and its limits.
+6. **References** — Soroban docs, CWE entries, and related detectors.
 
 ## See also
 
-- [Finding Codes](../error-codes.md)  the code!� meaning table.
-- [Glossary](../glossary.md)  50 Soroban/Stellar security terms.
-- [Detector Cookbook](../detector-cookbook.md)  how to *write* a new detector.
-- [Awesome Soroban Security](../awesome-soroban-security.md)  external resources.
+- [Finding Codes](../error-codes.md) — the code → meaning table.
+- [Glossary](../glossary.md) — 50 Soroban/Stellar security terms.
+- [Detector Cookbook](../detector-cookbook.md) — how to *write* a new detector.
+- [Awesome Soroban Security](../awesome-soroban-security.md) — external resources.
