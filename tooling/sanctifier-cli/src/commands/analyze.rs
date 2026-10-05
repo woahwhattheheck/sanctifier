@@ -524,6 +524,93 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         );
     }
 
+    if is_ndjson {
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+
+        ndjson::write_record(
+            &mut writer,
+            "meta",
+            None,
+            &serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "timestamp": timestamp,
+                "project_path": path.display().to_string(),
+                "vulnerability_db_version": vuln_db.version,
+            }),
+        )?;
+
+        macro_rules! emit_findings {
+            ($category:expr, $code:expr, $items:expr) => {
+                for finding in $items {
+                    ndjson::write_record(
+                        &mut writer,
+                        "finding",
+                        Some($category),
+                        &serde_json::json!({
+                            "code": $code,
+                            "finding": finding,
+                        }),
+                    )?;
+                }
+            };
+        }
+
+        emit_findings!("storage_collisions", finding_codes::STORAGE_COLLISION, &collisions);
+        emit_findings!("ledger_size_warnings", finding_codes::LEDGER_SIZE_RISK, &size_warnings);
+        emit_findings!("unsafe_patterns", finding_codes::UNSAFE_PATTERN, &unsafe_patterns);
+        emit_findings!("auth_gaps", finding_codes::AUTH_GAP, &auth_gaps);
+        emit_findings!("panic_issues", finding_codes::PANIC_USAGE, &panic_issues);
+        emit_findings!("arithmetic_issues", finding_codes::ARITHMETIC_OVERFLOW, &arithmetic_issues);
+        emit_findings!("custom_rules", finding_codes::CUSTOM_RULE_MATCH, &custom_matches);
+        emit_findings!("event_issues", finding_codes::EVENT_INCONSISTENCY, &event_issues);
+        emit_findings!("unhandled_results", finding_codes::UNHANDLED_RESULT, &unhandled_results);
+        for report in &upgrade_reports {
+            emit_findings!("upgrade_risks", finding_codes::UPGRADE_RISK, &report.findings);
+        }
+        emit_findings!("smt_issues", finding_codes::SMT_INVARIANT_VIOLATION, &smt_issues);
+
+        ndjson::write_record(
+            &mut writer,
+            "summary",
+            None,
+            &serde_json::json!({
+                "total_findings": total_findings,
+                "storage_collisions": collisions.len(),
+                "auth_gaps": auth_gaps.len(),
+                "panic_issues": panic_issues.len(),
+                "arithmetic_issues": arithmetic_issues.len(),
+                "size_warnings": size_warnings.len(),
+                "unsafe_patterns": unsafe_patterns.len(),
+                "custom_rule_matches": custom_matches.len(),
+                "event_issues": event_issues.len(),
+                "unhandled_results": unhandled_results.len(),
+                "smt_issues": smt_issues.len(),
+                "has_critical": has_critical,
+                "has_high": has_high,
+                "baseline": {
+                    "suppressed_count": suppressed_count,
+                    "stale_count": stale_entries.len(),
+                },
+            }),
+        )?;
+
+        if args.profile {
+            let snap = mem_tracker.sample();
+            eprintln!(
+                "{} Memory (final): {} MB RSS (peak: {} MB)",
+                "📊".blue(),
+                snap.current_rss_kb / 1024,
+                snap.peak_rss_kb / 1024
+            );
+        }
+
+        if has_critical || has_high {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     if is_json {
         let stale_json: Vec<serde_json::Value> = stale_entries
             .iter()
