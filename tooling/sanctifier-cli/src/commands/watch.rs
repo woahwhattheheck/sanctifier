@@ -195,12 +195,12 @@ fn analyze_child_args(args: &AnalyzeArgs) -> Vec<OsString> {
 
 fn clear_screen() {
     // ANSI: clear screen + move cursor to home.
-    print!("\x1B[2J\x1B[1;1H");
-    let _ = std::io::stdout().flush();
+    eprint!("\x1B[2J\x1B[1;1H");
+    let _ = std::io::stderr().flush();
 }
 
 fn print_watching(path: &Path) {
-    println!(
+    eprintln!(
         "\n👀 Watching {} for .rs changes — press Ctrl-C to stop.",
         path.display().to_string().cyan()
     );
