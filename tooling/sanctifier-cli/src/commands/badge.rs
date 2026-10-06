@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::{Args, ValueEnum};
+use clap::Args;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,18 +22,9 @@ pub struct BadgeArgs {
     #[arg(long)]
     pub badge_url: Option<String>,
 
-    /// Badge content to render.
-    #[arg(long, value_enum, default_value = "status")]
-    pub variant: BadgeVariant,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-pub enum BadgeVariant {
-    #[default]
-    Status,
-    Severity,
-    Grade,
-    Trend,
+    /// Badge content to render: status, severity, grade, or trend.
+    #[arg(long, default_value = "status")]
+    pub variant: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +63,16 @@ struct AnalyzeFindings {
     unhandled_results: Vec<serde_json::Value>,
     #[serde(default)]
     smt_issues: Vec<serde_json::Value>,
+    #[serde(default)]
+    storage_collisions: Vec<serde_json::Value>,
+    #[serde(default)]
+    unsafe_patterns: Vec<serde_json::Value>,
+    #[serde(default)]
+    custom_rules: Vec<serde_json::Value>,
+    #[serde(default)]
+    event_issues: Vec<serde_json::Value>,
+    #[serde(default)]
+    upgrade_risks: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +83,30 @@ struct AnalyzePanicIssue {
 #[derive(Debug, Deserialize)]
 struct AnalyzeSizeWarning {
     level: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SeverityCounts {
+    critical: usize,
+    high: usize,
+    medium: usize,
+    low: usize,
+}
+
+impl SeverityCounts {
+    fn grade(self) -> &'static str {
+        if self.critical > 0 {
+            "F"
+        } else if self.high > 0 {
+            "D"
+        } else if self.medium > 0 {
+            "C"
+        } else if self.low > 0 {
+            "B"
+        } else {
+            "A"
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -122,7 +147,7 @@ pub fn exec(args: BadgeArgs) -> anyhow::Result<()> {
     let report: AnalyzeReport = serde_json::from_str(&report_content)
         .with_context(|| format!("failed to parse JSON report: {}", args.report.display()))?;
 
-    let presentation = badge_presentation(&report, args.variant);
+    let presentation = badge_presentation(&report, &args.variant)?;
     let svg = generate_badge_svg(
         presentation.label,
         &presentation.value,
@@ -173,7 +198,7 @@ fn derive_status(summary: &AnalyzeSummary) -> SecurityStatus {
     }
 }
 
-fn severity_counts(report: &AnalyzeReport) -> (usize, usize) {
+fn severity_counts(report: &AnalyzeReport) -> SeverityCounts {
     let critical_panics = report
         .findings
         .panic_issues
@@ -185,6 +210,7 @@ fn severity_counts(report: &AnalyzeReport) -> (usize, usize) {
         .panic_issues
         .len()
         .saturating_sub(critical_panics);
+
     let critical = report.findings.auth_gaps.len() + critical_panics;
     let high = high_panics
         + report.findings.arithmetic_issues.len()
@@ -196,46 +222,54 @@ fn severity_counts(report: &AnalyzeReport) -> (usize, usize) {
             .iter()
             .filter(|warning| warning.level == "ExceedsLimit")
             .count();
-    (critical, high)
-}
+    let medium = report.findings.storage_collisions.len()
+        + report.findings.unsafe_patterns.len()
+        + report.findings.custom_rules.len()
+        + report.findings.event_issues.len()
+        + report.findings.upgrade_risks.len();
+    let low = report
+        .findings
+        .ledger_size_warnings
+        .iter()
+        .filter(|warning| warning.level != "ExceedsLimit")
+        .count();
 
-fn derive_grade(summary: &AnalyzeSummary) -> &'static str {
-    if summary.has_critical {
-        "F"
-    } else if summary.has_high {
-        "C"
-    } else if summary.total_findings > 0 {
-        "B"
-    } else {
-        "A"
+    SeverityCounts {
+        critical,
+        high,
+        medium,
+        low,
     }
 }
 
-fn badge_presentation(report: &AnalyzeReport, variant: BadgeVariant) -> BadgePresentation {
+fn badge_presentation(report: &AnalyzeReport, variant: &str) -> anyhow::Result<BadgePresentation> {
     let status = derive_status(&report.summary);
     match variant {
-        BadgeVariant::Status => BadgePresentation {
+        "status" => Ok(BadgePresentation {
             label: "Sanctifier",
             value: status.text().to_string(),
             color: status.color(),
-        },
-        BadgeVariant::Severity => {
-            let (critical, high) = severity_counts(report);
-            BadgePresentation {
+        }),
+        "severity" => {
+            let counts = severity_counts(report);
+            Ok(BadgePresentation {
                 label: "Sanctifier severity",
                 value: format!(
-                    "C:{critical} H:{high} T:{}",
-                    report.summary.total_findings
+                    "C:{} H:{} M:{} L:{}",
+                    counts.critical, counts.high, counts.medium, counts.low
                 ),
                 color: status.color(),
-            }
+            })
         }
-        BadgeVariant::Grade => BadgePresentation {
-            label: "Sanctifier grade",
-            value: derive_grade(&report.summary).to_string(),
-            color: status.color(),
-        },
-        BadgeVariant::Trend => BadgePresentation {
+        "grade" => {
+            let counts = severity_counts(report);
+            Ok(BadgePresentation {
+                label: "Sanctifier grade",
+                value: counts.grade().to_string(),
+                color: status.color(),
+            })
+        }
+        "trend" => Ok(BadgePresentation {
             label: "Sanctifier trend",
             value: format!(
                 "+{} / -{}",
@@ -247,7 +281,10 @@ fn badge_presentation(report: &AnalyzeReport, variant: BadgeVariant) -> BadgePre
             } else {
                 status.color()
             },
-        },
+        }),
+        other => anyhow::bail!(
+            "unknown badge variant '{other}'; expected status, severity, grade, or trend"
+        ),
     }
 }
 
@@ -339,7 +376,7 @@ mod tests {
     fn variants_use_current_report_and_baseline_semantics() {
         let report: AnalyzeReport = serde_json::from_str(r#"{
           "summary": {
-            "total_findings": 7,
+            "total_findings": 14,
             "has_critical": true,
             "has_high": true
           },
@@ -358,41 +395,87 @@ mod tests {
               {"level": "ApproachingLimit"}
             ],
             "unhandled_results": [{}],
-            "smt_issues": [{}]
+            "smt_issues": [{}],
+            "storage_collisions": [{}, {}],
+            "unsafe_patterns": [{}],
+            "custom_rules": [{}],
+            "event_issues": [{}],
+            "upgrade_risks": [{}]
           }
         }"#).expect("report fixture should parse");
 
-        assert_eq!(severity_counts(&report), (2, 5));
         assert_eq!(
-            badge_presentation(&report, BadgeVariant::Severity).value,
-            "C:2 H:5 T:7"
+            severity_counts(&report),
+            SeverityCounts {
+                critical: 2,
+                high: 5,
+                medium: 6,
+                low: 1,
+            }
         );
         assert_eq!(
-            badge_presentation(&report, BadgeVariant::Grade).value,
+            badge_presentation(&report, "severity").unwrap().value,
+            "C:2 H:5 M:6 L:1"
+        );
+        assert_eq!(
+            badge_presentation(&report, "grade").unwrap().value,
             "F"
         );
         assert_eq!(
-            badge_presentation(&report, BadgeVariant::Trend).value,
-            "+7 / -2"
+            badge_presentation(&report, "trend").unwrap().value,
+            "+14 / -2"
         );
     }
 
     #[test]
-    fn grade_preserves_status_boundaries() {
+    fn grade_uses_worst_severity() {
         let cases = [
-            (0, false, false, "A"),
-            (2, false, false, "B"),
-            (2, false, true, "C"),
-            (2, true, true, "F"),
+            (SeverityCounts::default(), "A"),
+            (
+                SeverityCounts {
+                    low: 1,
+                    ..SeverityCounts::default()
+                },
+                "B",
+            ),
+            (
+                SeverityCounts {
+                    medium: 1,
+                    ..SeverityCounts::default()
+                },
+                "C",
+            ),
+            (
+                SeverityCounts {
+                    high: 1,
+                    ..SeverityCounts::default()
+                },
+                "D",
+            ),
+            (
+                SeverityCounts {
+                    critical: 1,
+                    ..SeverityCounts::default()
+                },
+                "F",
+            ),
         ];
-        for (total_findings, has_critical, has_high, expected) in cases {
-            let summary = AnalyzeSummary {
-                total_findings,
-                has_critical,
-                has_high,
-            };
-            assert_eq!(derive_grade(&summary), expected);
+
+        for (counts, expected) in cases {
+            assert_eq!(counts.grade(), expected);
         }
+    }
+
+    #[test]
+    fn unknown_variant_is_rejected() {
+        let report: AnalyzeReport = serde_json::from_str(r#"{
+          "summary": {
+            "total_findings": 0,
+            "has_critical": false,
+            "has_high": false
+          }
+        }"#).unwrap();
+        assert!(badge_presentation(&report, "unknown").is_err());
     }
 
     #[test]
@@ -416,7 +499,7 @@ mod tests {
             svg_output: svg_path.clone(),
             markdown_output: Some(md_path.clone()),
             badge_url: Some("https://example.com/sanctifier-security.svg".to_string()),
-            variant: BadgeVariant::Status,
+            variant: "status".to_string(),
         };
         exec(args).expect("badge command should succeed");
 
