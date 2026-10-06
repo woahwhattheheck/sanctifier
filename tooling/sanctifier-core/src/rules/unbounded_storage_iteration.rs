@@ -280,6 +280,17 @@ fn len_call_collection(expr: &syn::Expr) -> Option<String> {
     }
 }
 
+fn is_same_collection_len(expr: &syn::Expr, collection: &str) -> bool {
+    match expr {
+        syn::Expr::Paren(paren) => is_same_collection_len(&paren.expr, collection),
+        syn::Expr::Group(group) => is_same_collection_len(&group.expr, collection),
+        syn::Expr::MethodCall(call) if call.method == "len" && call.args.is_empty() => {
+            simple_path_ident(&call.receiver).as_deref() == Some(collection)
+        }
+        _ => false,
+    }
+}
+
 fn iterated_storage_collection(expr: &syn::Expr, storage_collections: &HashSet<String>) -> Option<(String, bool)> {
     match expr {
         syn::Expr::Path(_) => simple_path_ident(expr)
@@ -288,7 +299,13 @@ fn iterated_storage_collection(expr: &syn::Expr, storage_collections: &HashSet<S
         syn::Expr::Reference(reference) => iterated_storage_collection(&reference.expr, storage_collections),
         syn::Expr::MethodCall(call) => {
             let (name, bounded) = iterated_storage_collection(&call.receiver, storage_collections)?;
-            Some((name, bounded || call.method == "take"))
+            let effective_take_bound = call.method == "take"
+                && call
+                    .args
+                    .iter()
+                    .next()
+                    .is_some_and(|limit| !is_same_collection_len(limit, &name));
+            Some((name, bounded || effective_take_bound))
         }
         _ => None,
     }
@@ -378,11 +395,25 @@ impl Contract {
         for member in members.iter().take(100) { consume(member); }
     }
 }"#;
+        let ineffective_take = r#"#[contractimpl]
+impl Contract {
+    pub fn scan(env: Env) {
+        let members: Vec<Address> = env.storage().persistent().get(&KEY).unwrap_or(Vec::new(&env));
+        for member in members.iter().take(members.len()) { consume(member); }
+    }
+}"#;
 
         let findings = UnboundedStorageIterationRule::new().check(bad);
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert!(UnboundedStorageIterationRule::new().check(good).is_empty());
         assert!(UnboundedStorageIterationRule::new().check(paged).is_empty());
+        assert_eq!(
+            UnboundedStorageIterationRule::new()
+                .check(ineffective_take)
+                .len(),
+            1,
+            "take(collection.len()) still scans the whole storage collection"
+        );
 
         let incidental_check = r#"#[contractimpl]
 impl Contract {
