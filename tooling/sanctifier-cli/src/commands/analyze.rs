@@ -164,16 +164,26 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         if let Ok(content) = fs::read_to_string(path) {
             let file_name = path.display().to_string();
             collisions.extend(analyzer.scan_storage_collisions(&content));
-            size_warnings.extend(analyzer.analyze_ledger_size(&content));
+            if analyzer.config.is_rule_enabled("ledger_size") {
+                size_warnings.extend(analyzer.analyze_ledger_size(&content));
+            }
             unsafe_patterns.extend(analyzer.analyze_unsafe_patterns(&content));
-            auth_gaps.extend(analyzer.scan_auth_gaps(&content));
-            panic_issues.extend(analyzer.scan_panics(&content));
-            arithmetic_issues.extend(analyzer.scan_arithmetic_overflow(&content));
+            if analyzer.config.is_rule_enabled("auth_gap") {
+                auth_gaps.extend(analyzer.scan_auth_gaps(&content));
+            }
+            if analyzer.config.is_rule_enabled("panic_detection") {
+                panic_issues.extend(analyzer.scan_panics(&content));
+            }
+            if analyzer.config.is_rule_enabled("arithmetic_overflow") {
+                arithmetic_issues.extend(analyzer.scan_arithmetic_overflow(&content));
+            }
             custom_matches
                 .extend(analyzer.analyze_custom_rules(&content, &analyzer.config.custom_rules));
             vuln_matches.extend(vuln_db.scan(&content, &file_name));
             event_issues.extend(analyzer.scan_events(&content));
-            unhandled_results.extend(analyzer.scan_unhandled_results(&content));
+            if analyzer.config.is_rule_enabled("unhandled_result") {
+                unhandled_results.extend(analyzer.scan_unhandled_results(&content));
+            }
             upgrade_reports.push(analyzer.analyze_upgrade_patterns(&content));
             smt_issues.extend(analyzer.verify_smt_invariants(&content));
         }
@@ -937,8 +947,10 @@ fn walk_dir(
                 }
                 collisions.extend(c);
 
-                let s = analyzer.analyze_ledger_size(&content);
-                size_warnings.extend(s);
+                if analyzer.config.is_rule_enabled("ledger_size") {
+                    let s = analyzer.analyze_ledger_size(&content);
+                    size_warnings.extend(s);
+                }
 
                 let mut u = analyzer.analyze_unsafe_patterns(&content);
                 for i in &mut u {
@@ -946,20 +958,26 @@ fn walk_dir(
                 }
                 unsafe_patterns.extend(u);
 
-                for g in analyzer.scan_auth_gaps(&content) {
-                    auth_gaps.push(format!("{}:{}", file_name, g));
+                if analyzer.config.is_rule_enabled("auth_gap") {
+                    for g in analyzer.scan_auth_gaps(&content) {
+                        auth_gaps.push(format!("{}:{}", file_name, g));
+                    }
                 }
 
-                let mut p = analyzer.scan_panics(&content);
-                for i in &mut p {
-                    i.location = format!("{}:{}", file_name, i.location);
-                    panic_issues.push(i.clone());
+                if analyzer.config.is_rule_enabled("panic_detection") {
+                    let mut p = analyzer.scan_panics(&content);
+                    for i in &mut p {
+                        i.location = format!("{}:{}", file_name, i.location);
+                        panic_issues.push(i.clone());
+                    }
                 }
 
-                let mut a = analyzer.scan_arithmetic_overflow(&content);
-                for i in &mut a {
-                    i.location = format!("{}:{}", file_name, i.location);
-                    arithmetic_issues.push(i.clone());
+                if analyzer.config.is_rule_enabled("arithmetic_overflow") {
+                    let mut a = analyzer.scan_arithmetic_overflow(&content);
+                    for i in &mut a {
+                        i.location = format!("{}:{}", file_name, i.location);
+                        arithmetic_issues.push(i.clone());
+                    }
                 }
 
                 let mut custom =
@@ -978,11 +996,13 @@ fn walk_dir(
                 }
                 event_issues.extend(e);
 
-                let mut r = analyzer.scan_unhandled_results(&content);
-                for i in &mut r {
-                    i.location = format!("{}:{}", file_name, i.location);
+                if analyzer.config.is_rule_enabled("unhandled_result") {
+                    let mut r = analyzer.scan_unhandled_results(&content);
+                    for i in &mut r {
+                        i.location = format!("{}:{}", file_name, i.location);
+                    }
+                    unhandled_results.extend(r);
                 }
-                unhandled_results.extend(r);
 
                 let mut up = analyzer.analyze_upgrade_patterns(&content);
                 for f in &mut up.findings {
