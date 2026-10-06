@@ -112,6 +112,13 @@ fn validate_values(config: &SanctifyConfig, config_path: &Path) -> Result<()> {
         );
     }
 
+    if config.enabled_rules.is_empty() {
+        bail!(
+            "invalid Sanctifier config {}: `enabled_rules` must contain at least one rule name",
+            config_path.display()
+        );
+    }
+
     if !config.approaching_threshold.is_finite()
         || config.approaching_threshold <= 0.0
         || config.approaching_threshold > 1.0
@@ -213,6 +220,9 @@ severty = "warning"
             .unwrap_err()
             .to_string();
         assert!(threshold_err.contains("approaching_threshold"));
+
+        let rules_err = parse("enabled_rules = []").unwrap_err().to_string();
+        assert!(rules_err.contains("enabled_rules"));
 
         let regex_err = parse(
             r#"
