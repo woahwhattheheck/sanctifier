@@ -1,3 +1,4 @@
+use crate::finding_codes::HARDCODED_DECIMALS;
 use crate::rules::{Rule, RuleViolation, Severity};
 use std::collections::HashSet;
 use syn::spanned::Spanned;
@@ -68,7 +69,7 @@ impl HardcodedDecimalsVisitor {
 
         self.violations.push(
             RuleViolation::new(
-                "hardcoded_decimals",
+                HARDCODED_DECIMALS,
                 Severity::Warning,
                 format!(
                     "Hardcoded precision `{name} = {value}` assumes a fixed asset decimal configuration"
@@ -95,7 +96,7 @@ impl HardcodedDecimalsVisitor {
 
         self.violations.push(
             RuleViolation::new(
-                "hardcoded_decimals",
+                HARDCODED_DECIMALS,
                 Severity::Warning,
                 format!(
                     "Token amount conversion uses hardcoded decimal scale `{value}`, assuming every asset has the same precision"
