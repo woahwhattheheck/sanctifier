@@ -138,14 +138,17 @@ pub fn exec(args: InitArgs, path: Option<PathBuf>) -> anyhow::Result<()> {
         let workflow_path = target_dir.join(CI_WORKFLOW_PATH);
         let baseline_path = target_dir.join(BASELINE_FILE);
 
-        // Preserve the existing safety contract for a config-only/partial setup.
-        // A fully initialized project is idempotent; --force explicitly repairs
-        // or refreshes a partial scaffold.
-        let scaffold_complete =
-            config_path.exists() && workflow_path.exists() && baseline_path.exists();
-        if config_path.exists() && !args.force && !scaffold_complete {
+        // A fully initialized project is idempotent. Any partial scaffold is
+        // ambiguous and must be repaired explicitly so stale artifacts are not
+        // silently combined with newly generated ones.
+        let config_exists = config_path.exists();
+        let workflow_exists = workflow_path.exists();
+        let baseline_exists = baseline_path.exists();
+        let scaffold_complete = config_exists && workflow_exists && baseline_exists;
+        let scaffold_partial = (config_exists || workflow_exists || baseline_exists) && !scaffold_complete;
+        if scaffold_partial && !args.force {
             anyhow::bail!(
-                "configuration file already exists; use --force to complete the Sanctifier scaffold"
+                "partial Sanctifier scaffold exists; use --force to repair or refresh it"
             );
         }
 
@@ -376,6 +379,34 @@ mod tests {
         assert_eq!(fs::read(&config_path).unwrap(), before.0);
         assert_eq!(fs::read(&workflow_path).unwrap(), before.1);
         assert_eq!(fs::read(&baseline_path).unwrap(), before.2);
+    }
+
+    #[test]
+    fn test_exec_rejects_partial_scaffold_without_force() {
+        let temp_dir = TempDir::new().unwrap();
+        let baseline_path = temp_dir.path().join(BASELINE_FILE);
+        let stale_baseline = br#"{"version":1,"findings":[]}"#;
+        fs::write(&baseline_path, stale_baseline).unwrap();
+
+        let result = exec(
+            InitArgs { force: false },
+            Some(temp_dir.path().to_path_buf()),
+        );
+
+        assert!(result.is_err(), "partial scaffold should require --force");
+        assert!(
+            !temp_dir.path().join(".sanctify.toml").exists(),
+            "config must not be created during a rejected partial repair"
+        );
+        assert!(
+            !temp_dir.path().join(CI_WORKFLOW_PATH).exists(),
+            "workflow must not be created during a rejected partial repair"
+        );
+        assert_eq!(
+            fs::read(&baseline_path).unwrap(),
+            stale_baseline,
+            "existing partial artifact must remain unchanged"
+        );
     }
 
     #[test]
