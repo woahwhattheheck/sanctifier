@@ -52,8 +52,10 @@ The rule parses each `#[contracttype]` independently and computes an
 width values include the `ScVal` type tag and XDR payload: small Rust integer
 types widen to the 32-bit Soroban scalar representation, `u64`/`i64` and
 128/256-bit values budget their wider XDR payloads, `Address` uses the larger
-account-address representation, fixed arrays include container framing, and
-`BytesN<N>` includes its padded fixed byte payload.
+account-address representation, and `BytesN<N>` includes its padded fixed
+byte payload. The repository is pinned to Soroban SDK 20.5.0, where raw Rust
+arrays are not contract-spec field types; fixed byte payloads should use
+`BytesN<N>`.
 
 ### Documented estimation margin
 
@@ -83,10 +85,12 @@ error bound for runtime-sized collections. Pair this rule with
 [`unbounded_storage`](unbounded_storage.md) when collection growth is the
 risk.
 
-The golden `ledger_size` fixture intentionally keeps a `[u8; 4096]` case
-that the old 32-byte fallback overestimated at 131 KB. It now produces no
-finding; focused unit coverage separately checks both a near-cap warning and an
-over-cap error.
+The golden `ledger_size` fixture uses `BytesN<4096>`, a contract-spec type
+supported by the pinned SDK, and verifies that a modest fixed byte payload stays
+below the warning threshold. Focused unit coverage uses larger valid
+`BytesN<N>` values to exercise both the near-cap warning and over-cap error.
+Raw Rust arrays such as `[u8; N]` are deliberately not used as serialization
+fidelity evidence because SDK 20.5.0 rejects them in contract specs.
 
 ## References
 

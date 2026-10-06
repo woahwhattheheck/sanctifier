@@ -342,17 +342,17 @@ mod tests {
     #[test]
     fn fixed_width_estimates_follow_xdr_shape() {
         let rule = LedgerSizeRule::new();
-        let u8_ty: Type = syn::parse_quote!(u8);
+        let u32_ty: Type = syn::parse_quote!(u32);
         let u64_ty: Type = syn::parse_quote!(u64);
         let address_ty: Type = syn::parse_quote!(Address);
         let bytes_n_ty: Type = syn::parse_quote!(BytesN<32>);
-        let array_ty: Type = syn::parse_quote!([u8; 4096]);
+        let large_bytes_n_ty: Type = syn::parse_quote!(BytesN<4096>);
 
-        assert_eq!(rule.estimate_type_size(&u8_ty), 8);
+        assert_eq!(rule.estimate_type_size(&u32_ty), 8);
         assert_eq!(rule.estimate_type_size(&u64_ty), 12);
         assert_eq!(rule.estimate_type_size(&address_ty), 44);
         assert_eq!(rule.estimate_type_size(&bytes_n_ty), 40);
-        assert_eq!(rule.estimate_type_size(&array_ty), 32_780);
+        assert_eq!(rule.estimate_type_size(&large_bytes_n_ty), 4_104);
     }
 
     #[test]
@@ -395,18 +395,18 @@ mod tests {
     #[test]
     fn reports_near_cap_warning_and_over_cap_error_with_per_struct_budget() {
         let source = r#"
-            use soroban_sdk::{contracttype, Address};
+            use soroban_sdk::{contracttype, Address, BytesN};
 
             #[contracttype]
             pub struct NearCapState {
                 pub admin: Address,
-                pub blob: [u8; 6400],
+                pub blob: BytesN<46500>,
             }
 
             #[contracttype]
             pub struct OversizedState {
                 pub admin: Address,
-                pub blob: [u8; 8000],
+                pub blob: BytesN<58100>,
             }
         "#;
 
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Warning);
         assert_eq!(findings[1].severity, Severity::Error);
         assert!(findings[0].message.contains("10% safety budget"));
-        assert!(findings[0].location.contains("remaining 7618 bytes"));
+        assert!(findings[0].location.contains("remaining 12748 bytes"));
         assert!(findings[1].location.contains("remaining 0 bytes"));
     }
 }
