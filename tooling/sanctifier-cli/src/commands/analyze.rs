@@ -430,6 +430,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         + panic_issues.len()
         + arithmetic_issues.len()
         + custom_matches.len()
+        + vuln_matches.len()
         + event_issues.len()
         + unhandled_results.len()
         + upgrade_reports
