@@ -27,9 +27,8 @@ impl UpgradeAuthRule {
             return Vec::new();
         }
 
-        let admin_addresses = admin_address_params(sig);
         let mut guard = UpgradeGuardVisitor {
-            admin_addresses: &admin_addresses,
+            admin_addresses: admin_address_params(sig),
             has_upgrade_call: false,
             has_admin_auth: false,
             has_nonce_validation: false,
@@ -130,8 +129,8 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
     }
 }
 
-struct UpgradeGuardVisitor<'a> {
-    admin_addresses: &'a BTreeSet<String>,
+struct UpgradeGuardVisitor {
+    admin_addresses: BTreeSet<String>,
     has_upgrade_call: bool,
     has_admin_auth: bool,
     has_nonce_validation: bool,
@@ -252,8 +251,16 @@ fn nonce_related_ident_count(
         .sum()
 }
 
-impl<'ast> Visit<'ast> for UpgradeGuardVisitor<'_> {
+impl<'ast> Visit<'ast> for UpgradeGuardVisitor {
     fn visit_local(&mut self, node: &'ast syn::Local) {
+        if let syn::Pat::Type(typed) = &node.pat {
+            if let Some(name) = local_binding_ident(&node.pat) {
+                if is_admin_marker(&name) && type_mentions_address(&typed.ty) {
+                    self.admin_addresses.insert(name);
+                }
+            }
+        }
+
         if let Some(init) = &node.init {
             if expr_has_nonce_marker_or_binding(&init.expr, &self.nonce_bindings) {
                 if let Some(name) = local_binding_ident(&node.pat) {
@@ -396,6 +403,22 @@ impl Contract {
         env.storage().instance().set(&"upgrade_nonce", &(stored_nonce + 1));
         env.deployer().update_current_contract_wasm(wasm_hash);
     }
+}
+"#;
+
+        assert!(UpgradeAuthRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn accepts_typed_storage_owner_plus_nonce_guard() {
+        let source = r#"
+pub fn upgrade(env: Env, nonce: u64, wasm_hash: BytesN<32>) {
+    let owner: Address = env.storage().instance().get(&"OWNER").unwrap();
+    owner.require_auth();
+    let current_nonce: u64 = env.storage().instance().get(&"upgrade_nonce").unwrap_or(0);
+    assert_eq!(current_nonce, nonce);
+    env.storage().instance().set(&"upgrade_nonce", &(current_nonce + 1));
+    env.deployer().update_current_contract_wasm(wasm_hash);
 }
 "#;
 
