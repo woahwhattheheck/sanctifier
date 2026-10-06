@@ -10,7 +10,7 @@ use crate::vulndb::VulnDatabase;
 
 #[derive(Args, Debug)]
 pub struct InitArgs {
-    /// Force overwrite existing Sanctifier scaffold artifacts
+    /// Force overwrite existing configuration file
     #[arg(short, long)]
     pub force: bool,
 }
@@ -137,6 +137,17 @@ pub fn exec(args: InitArgs, path: Option<PathBuf>) -> anyhow::Result<()> {
         let config_path = target_dir.join(".sanctify.toml");
         let workflow_path = target_dir.join(CI_WORKFLOW_PATH);
         let baseline_path = target_dir.join(BASELINE_FILE);
+
+        // Preserve the existing safety contract for a config-only/partial setup.
+        // A fully initialized project is idempotent; --force explicitly repairs
+        // or refreshes a partial scaffold.
+        let scaffold_complete =
+            config_path.exists() && workflow_path.exists() && baseline_path.exists();
+        if config_path.exists() && !args.force && !scaffold_complete {
+            anyhow::bail!(
+                "configuration file already exists; use --force to complete the Sanctifier scaffold"
+            );
+        }
 
         let config_written = args.force || !config_path.exists();
         if config_written {
