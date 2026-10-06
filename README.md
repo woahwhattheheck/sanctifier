@@ -127,10 +127,10 @@ sanctifier badge --report sanctifier-report.json --svg-output badges/sanctifier-
 Select richer views with `--variant`:
 
 ```bash
-# Critical/high/total finding counts
+# Critical/high/medium/low severity counts
 sanctifier badge --variant severity --report sanctifier-report.json --svg-output badges/sanctifier-severity.svg
 
-# A/B/C/F grade using the same critical/high/other boundaries as the status badge
+# A/B/C/D/F grade from the worst severity present (clean/low/medium/high/critical)
 sanctifier badge --variant grade --report sanctifier-report.json --svg-output badges/sanctifier-grade.svg
 
 # New vs. fixed findings relative to .sanctify-baseline.json
