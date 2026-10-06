@@ -252,9 +252,11 @@ fn flatten_file_findings(
         ));
     }
 
-    // S007 — Custom rules use the rule name as stable semantic context.
+    // S007 — Custom rules use rule + matched source as stable semantic context.
+    // The source snippet distinguishes separate matches of one rule in a file,
+    // while FlatFinding normalization keeps line shifts out of the fingerprint.
     for m in analyzer.analyze_custom_rules(content, &analyzer.config.custom_rules) {
-        flat.push(custom_rule_flat_finding(&m, file_name));
+        flat.push(custom_rule_flat_finding(&m, file_name, &m.snippet));
     }
 
     // VulnDB matches
@@ -267,9 +269,11 @@ fn flatten_file_findings(
 pub(crate) fn custom_rule_flat_finding(
     m: &sanctifier_core::CustomRuleMatch,
     file_name: &str,
+    source_snippet: &str,
 ) -> FlatFinding {
     let loc = format!("{file_name}:{}", m.line);
-    FlatFinding::new(finding_codes::CUSTOM_RULE_MATCH, &loc, &m.rule_name)
+    let ctx = format!("{}|{}", m.rule_name, source_snippet);
+    FlatFinding::new(finding_codes::CUSTOM_RULE_MATCH, &loc, &ctx)
 }
 
 /// Preserve the existing VulnDB baseline fingerprint when applying a baseline.
