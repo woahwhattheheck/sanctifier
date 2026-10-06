@@ -168,14 +168,14 @@ impl<'ast> Visit<'ast> for RecursionFacts<'_> {
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if call_target_name(&node.func).as_deref() == Some(self.fn_name) {
+        if is_direct_self_call(&node.func, self.fn_name) {
             self.record_recursive_args(&node.args);
         }
         visit::visit_expr_call(self, node);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if node.method == self.fn_name {
+        if node.method == self.fn_name && expr_is_ident(&node.receiver, "self") {
             self.record_recursive_args(&node.args);
         }
         visit::visit_expr_method_call(self, node);
@@ -223,14 +223,15 @@ fn depth_parameter_names(sig: &Signature) -> HashSet<String> {
         .collect()
 }
 
-fn call_target_name(expr: &Expr) -> Option<String> {
-    match peel(expr) {
-        Expr::Path(path) => path
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string()),
-        _ => None,
+fn is_direct_self_call(expr: &Expr, fn_name: &str) -> bool {
+    let Expr::Path(path) = peel(expr) else {
+        return false;
+    };
+    let segments: Vec<_> = path.path.segments.iter().collect();
+    match segments.as_slice() {
+        [only] => only.ident == fn_name,
+        [first, last] => first.ident == "Self" && last.ident == fn_name,
+        _ => false,
     }
 }
 
