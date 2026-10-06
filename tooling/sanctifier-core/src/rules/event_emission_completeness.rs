@@ -1,7 +1,9 @@
 use crate::finding_codes::EVENT_EMISSION_GAP;
 use crate::rules::{Rule, RuleViolation, Severity};
+use syn::parse::Parser;
+use syn::punctuated::Punctuated;
 use syn::visit::Visit;
-use syn::Attribute;
+use syn::{Attribute, Meta};
 
 /// Detects gaps in an established Soroban contract event surface.
 ///
@@ -190,20 +192,67 @@ fn has_cfg_test(attrs: &[Attribute]) -> bool {
         if !attr.path().is_ident("cfg") {
             return false;
         }
-        match &attr.meta {
-            syn::Meta::List(list) => list
-                .tokens
-                .to_string()
-                .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
-                .any(|part| part == "test"),
-            _ => false,
-        }
+        let Meta::List(list) = &attr.meta else {
+            return false;
+        };
+
+        let parser = Punctuated::<Meta, syn::Token![,]>::parse_terminated;
+        parser
+            .parse2(list.tokens.clone())
+            .map(|items| items.iter().any(|meta| cfg_meta_has_positive_test(meta, false)))
+            .unwrap_or(false)
     })
+}
+
+fn cfg_meta_has_positive_test(meta: &Meta, negated: bool) -> bool {
+    match meta {
+        Meta::Path(path) => !negated && path.is_ident("test"),
+        Meta::List(list) => {
+            let nested_negated = if list.path.is_ident("not") {
+                !negated
+            } else {
+                negated
+            };
+            let parser = Punctuated::<Meta, syn::Token![,]>::parse_terminated;
+            parser
+                .parse2(list.tokens.clone())
+                .map(|items| {
+                    items
+                        .iter()
+                        .any(|meta| cfg_meta_has_positive_test(meta, nested_negated))
+                })
+                .unwrap_or(false)
+        }
+        Meta::NameValue(_) => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn does_not_suppress_production_code_behind_cfg_not_test() {
+        let source = r#"
+            #[cfg(not(test))]
+            mod production {
+                #[contractimpl]
+                impl Contract {
+                    pub fn emit(env: Env) {
+                        env.events().publish(("changed",), ());
+                    }
+
+                    pub fn write(env: Env) {
+                        env.storage().instance().set(&"value", &1_u32);
+                    }
+                }
+            }
+        "#;
+
+        let findings = EventEmissionCompletenessRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].location.starts_with("write:"));
+    }
 
     #[test]
     fn ignores_non_soroban_receivers_with_storage_like_names() {
