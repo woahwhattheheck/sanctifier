@@ -1,8 +1,8 @@
+use crate::finding_codes::SELF_FLOW_GUARD;
 use crate::rules::{Rule, RuleViolation, Severity};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-const FINDING_CODE: &str = "SANCT_SELF_FLOW_GUARD";
 
 /// Detects transfer/referral entrypoints whose endpoint parameters are not
 /// compared before the function continues.
@@ -79,10 +79,10 @@ impl SelfFlowGuardRule {
         let name = sig.ident.to_string();
         Some(
             RuleViolation::new(
-                FINDING_CODE,
+                SELF_FLOW_GUARD,
                 Severity::Warning,
                 format!(
-                    "{FINDING_CODE}: {name} accepts {} and {} without an explicit equality guard",
+                    "{SELF_FLOW_GUARD}: {name} accepts {} and {} without an explicit equality guard",
                     pair.0, pair.1
                 ),
                 format!("{}:{}", name, sig.span().start().line),
@@ -231,7 +231,7 @@ mod tests {
         "#;
         let findings = SelfFlowGuardRule::new().check(source);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].rule_name, FINDING_CODE);
+        assert_eq!(findings[0].rule_name, SELF_FLOW_GUARD);
     }
 
     #[test]
