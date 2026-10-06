@@ -1,6 +1,6 @@
 use crate::finding_codes::DUPLICATE_STORAGE_WRITE;
 use crate::rules::{Rule, RuleViolation, Severity};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::Attribute;
@@ -64,9 +64,16 @@ impl DuplicateWriteVisitor {
         self.test_depth > 0
     }
 
-    fn analyze_function(&mut self, fn_name: &str, block: &syn::Block) {
+    fn analyze_function(&mut self, sig: &syn::Signature, block: &syn::Block) {
+        let env_params = env_parameter_names(sig);
+        if env_params.is_empty() {
+            return;
+        }
+
+        let function_name = sig.ident.to_string();
         let mut blocks = BlockVisitor {
-            function_name: fn_name,
+            function_name: &function_name,
+            env_params: &env_params,
             violations: &mut self.violations,
         };
         blocks.visit_block(block);
@@ -87,25 +94,31 @@ impl<'ast> Visit<'ast> for DuplicateWriteVisitor {
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
         if !self.in_test_module() {
-            self.analyze_function(&node.sig.ident.to_string(), &node.block);
+            self.analyze_function(&node.sig, &node.block);
         }
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         if !self.in_test_module() {
-            self.analyze_function(&node.sig.ident.to_string(), &node.block);
+            self.analyze_function(&node.sig, &node.block);
         }
     }
 }
 
 struct BlockVisitor<'a> {
     function_name: &'a str,
+    env_params: &'a HashSet<String>,
     violations: &'a mut Vec<RuleViolation>,
 }
 
 impl<'ast> Visit<'ast> for BlockVisitor<'_> {
     fn visit_block(&mut self, node: &'ast syn::Block) {
-        analyze_direct_statements(self.function_name, node, self.violations);
+        analyze_direct_statements(
+            self.function_name,
+            node,
+            self.env_params,
+            self.violations,
+        );
         visit::visit_block(self, node);
     }
 }
@@ -121,12 +134,13 @@ struct StorageWrite {
 fn analyze_direct_statements(
     fn_name: &str,
     block: &syn::Block,
+    env_params: &HashSet<String>,
     violations: &mut Vec<RuleViolation>,
 ) {
     let mut last_by_target: HashMap<(String, String), StorageWrite> = HashMap::new();
 
     for statement in &block.stmts {
-        let Some(write) = direct_storage_set(statement) else {
+        let Some(write) = direct_storage_set(statement, env_params) else {
             last_by_target.clear();
             continue;
         };
@@ -155,7 +169,10 @@ fn analyze_direct_statements(
     }
 }
 
-fn direct_storage_set(statement: &syn::Stmt) -> Option<StorageWrite> {
+fn direct_storage_set(
+    statement: &syn::Stmt,
+    env_params: &HashSet<String>,
+) -> Option<StorageWrite> {
     let syn::Stmt::Expr(syn::Expr::MethodCall(call), _) = statement else {
         return None;
     };
@@ -163,7 +180,7 @@ fn direct_storage_set(statement: &syn::Stmt) -> Option<StorageWrite> {
         return None;
     }
 
-    let kind = storage_kind(&call.receiver)?;
+    let kind = storage_kind(&call.receiver, env_params)?;
     let mut args = call.args.iter();
     let key_expr = args.next()?;
     let value_expr = args.next()?;
@@ -181,7 +198,42 @@ fn direct_storage_set(statement: &syn::Stmt) -> Option<StorageWrite> {
     })
 }
 
-fn storage_kind(expr: &syn::Expr) -> Option<&'static str> {
+fn env_parameter_names(sig: &syn::Signature) -> HashSet<String> {
+    sig.inputs
+        .iter()
+        .filter_map(|arg| {
+            let syn::FnArg::Typed(arg) = arg else {
+                return None;
+            };
+            if !is_env_type(&arg.ty) {
+                return None;
+            }
+            let syn::Pat::Ident(ident) = arg.pat.as_ref() else {
+                return None;
+            };
+            Some(ident.ident.to_string())
+        })
+        .collect()
+}
+
+fn is_env_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Env"),
+        syn::Type::Reference(reference) => is_env_type(&reference.elem),
+        syn::Type::Paren(paren) => is_env_type(&paren.elem),
+        syn::Type::Group(group) => is_env_type(&group.elem),
+        _ => false,
+    }
+}
+
+fn storage_kind(
+    expr: &syn::Expr,
+    env_params: &HashSet<String>,
+) -> Option<&'static str> {
     let syn::Expr::MethodCall(call) = expr else {
         return None;
     };
@@ -197,20 +249,36 @@ fn storage_kind(expr: &syn::Expr) -> Option<&'static str> {
     };
 
     if let Some(kind) = kind {
-        return has_storage_hop(&call.receiver).then_some(kind);
+        return storage_env_root(&call.receiver)
+            .filter(|name| env_params.contains(name))
+            .map(|_| kind);
     }
 
-    storage_kind(&call.receiver)
+    storage_kind(&call.receiver, env_params)
 }
 
-fn has_storage_hop(expr: &syn::Expr) -> bool {
+fn storage_env_root(expr: &syn::Expr) -> Option<String> {
     match expr {
-        syn::Expr::MethodCall(call) if call.method == "storage" => true,
-        syn::Expr::MethodCall(call) => has_storage_hop(&call.receiver),
-        syn::Expr::Reference(reference) => has_storage_hop(&reference.expr),
-        syn::Expr::Paren(paren) => has_storage_hop(&paren.expr),
-        syn::Expr::Group(group) => has_storage_hop(&group.expr),
-        _ => false,
+        syn::Expr::MethodCall(call) if call.method == "storage" => {
+            env_receiver_name(&call.receiver)
+        }
+        syn::Expr::MethodCall(call) => storage_env_root(&call.receiver),
+        syn::Expr::Reference(reference) => storage_env_root(&reference.expr),
+        syn::Expr::Paren(paren) => storage_env_root(&paren.expr),
+        syn::Expr::Group(group) => storage_env_root(&group.expr),
+        _ => None,
+    }
+}
+
+fn env_receiver_name(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(path) if path.qself.is_none() => {
+            path.path.get_ident().map(ToString::to_string)
+        }
+        syn::Expr::Reference(reference) => env_receiver_name(&reference.expr),
+        syn::Expr::Paren(paren) => env_receiver_name(&paren.expr),
+        syn::Expr::Group(group) => env_receiver_name(&group.expr),
+        _ => None,
     }
 }
 
@@ -331,6 +399,38 @@ mod tests {
             DuplicateStorageWriteRule::new().check(source).is_empty(),
             "custom APIs named persistent().set() must not be treated as Soroban storage"
         );
+    }
+
+    #[test]
+    fn ignores_custom_storage_hop_with_soroban_shaped_method_names() {
+        let source = r#"
+            impl CacheUser {
+                pub fn save(cache: Cache, key: Symbol, value: i128) {
+                    cache.storage().persistent().set(&key, &value);
+                    cache.storage().persistent().set(&key, &value);
+                }
+            }
+        "#;
+
+        assert!(
+            DuplicateStorageWriteRule::new().check(source).is_empty(),
+            "a custom storage().persistent().set() chain must not be treated as Soroban storage"
+        );
+    }
+
+    #[test]
+    fn detects_renamed_env_parameter() {
+        let source = r#"
+            impl Contract {
+                pub fn save(context: soroban_sdk::Env, key: Symbol, value: i128) {
+                    context.storage().persistent().set(&key, &value);
+                    context.storage().persistent().set(&key, &value);
+                }
+            }
+        "#;
+
+        let findings = DuplicateStorageWriteRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
     }
 
 }
