@@ -1,5 +1,6 @@
 use crate::finding_codes::SELF_FLOW_GUARD;
 use crate::rules::{Rule, RuleViolation, Severity};
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -206,10 +207,17 @@ impl<'ast> Visit<'ast> for GuardVisitor<'_> {
             name.as_str(),
             "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne"
         ) {
-            let tokens = node.tokens.to_string();
-            if tokens.contains(self.left) && tokens.contains(self.right) {
-                self.found = true;
-                return;
+            if let Ok(args) =
+                syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
+                    .parse2(node.tokens.clone())
+            {
+                let mut args = args.iter();
+                if let (Some(left), Some(right)) = (args.next(), args.next()) {
+                    if self.matches_pair(left, right) {
+                        self.found = true;
+                        return;
+                    }
+                }
             }
         }
         syn::visit::visit_macro(self, node);
@@ -258,6 +266,21 @@ mod tests {
             }
         "#;
         assert!(SelfFlowGuardRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn macro_guard_requires_exact_endpoint_expressions() {
+        let source = r#"
+            fn reward_referral(referrer: Address, referee: Address) {
+                let referrer_count = 1;
+                let referee_count = 2;
+                assert_ne!(referrer_count, referee_count);
+                record(referrer, referee);
+            }
+        "#;
+        let findings = SelfFlowGuardRule::new().check(source);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_name, SELF_FLOW_GUARD);
     }
 
     #[test]
