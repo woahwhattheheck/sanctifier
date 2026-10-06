@@ -34,6 +34,8 @@ struct AnalyzeReport {
     baseline: AnalyzeBaseline,
     #[serde(default)]
     findings: AnalyzeFindings,
+    #[serde(default)]
+    vulnerability_db_matches: Vec<AnalyzeVulnerabilityMatch>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +93,12 @@ struct AnalyzeCustomRule {
     severity: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AnalyzeVulnerabilityMatch {
+    #[serde(default)]
+    severity: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct SeverityCounts {
     critical: usize,
@@ -100,6 +108,15 @@ struct SeverityCounts {
 }
 
 impl SeverityCounts {
+    fn add_named_severity(&mut self, severity: Option<&str>) {
+        match severity.unwrap_or("medium").to_ascii_lowercase().as_str() {
+            "critical" => self.critical += 1,
+            "high" => self.high += 1,
+            "low" | "info" => self.low += 1,
+            _ => self.medium += 1,
+        }
+    }
+
     fn grade(self) -> &'static str {
         if self.critical > 0 {
             "F"
@@ -256,12 +273,10 @@ fn severity_counts(report: &AnalyzeReport) -> SeverityCounts {
         low,
     };
     for rule in &report.findings.custom_rules {
-        match rule.severity.as_deref().unwrap_or("medium").to_ascii_lowercase().as_str() {
-            "critical" => counts.critical += 1,
-            "high" => counts.high += 1,
-            "low" | "info" => counts.low += 1,
-            _ => counts.medium += 1,
-        }
+        counts.add_named_severity(rule.severity.as_deref());
+    }
+    for finding in &report.vulnerability_db_matches {
+        counts.add_named_severity(finding.severity.as_deref());
     }
     counts
 }
@@ -470,6 +485,35 @@ mod tests {
         let grade = badge_presentation(&report, "grade").unwrap();
         assert_eq!(grade.value, "F");
         assert_eq!(grade.color, SecurityStatus::Critical.color());
+    }
+
+    #[test]
+    fn vulnerability_database_matches_contribute_to_severity_and_grade() {
+        let report: AnalyzeReport = serde_json::from_str(r#"{
+          "summary": {
+            "total_findings": 0,
+            "has_critical": false,
+            "has_high": false
+          },
+          "vulnerability_db_matches": [
+            {"severity": "critical"},
+            {"severity": "low"}
+          ]
+        }"#).expect("report fixture should parse");
+
+        assert_eq!(
+            severity_counts(&report),
+            SeverityCounts {
+                critical: 1,
+                high: 0,
+                medium: 0,
+                low: 1,
+            }
+        );
+        assert_eq!(
+            badge_presentation(&report, "grade").unwrap().value,
+            "F"
+        );
     }
 
     #[test]
