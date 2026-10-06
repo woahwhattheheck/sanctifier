@@ -61,9 +61,11 @@ bindings whose initializer contains a `persistent().get(..)`,
 `instance().try_get(..)`, then looks for `for` loops over those bindings.
 A dominating runtime upper bound suppresses the advisory: an enclosing
 `if`/`while` condition that constrains `.len()`, an `assert!`/`assert_eq!`/
-`ensure!`/`require!` guard that constrains the length, or a `.take(..)`
-iterator bound. Incidental length checks, `!=` tests, and `debug_assert!`
-do not count as production bounds.
+`ensure!`/`require!` guard that constrains the length, or an explicit `.take(..)`
+iterator bound. A no-op bound such as `.take(collection.len())` does not suppress
+the finding because it still permits O(n) work over the full stored collection.
+Incidental length checks, `!=` tests, and `debug_assert!` do not count as
+production bounds.
 
 **Limitations:** this is intentionally local and conservative. Bounds hidden in
 a helper function or enforced by a contract-wide invariant are not inferred.
