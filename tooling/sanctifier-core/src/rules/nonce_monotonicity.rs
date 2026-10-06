@@ -30,13 +30,15 @@ impl NonceMonotonicityRule {
         let mut visitor = NonceFlowVisitor::default();
         visitor.visit_block(block);
 
-        if visitor.strict_next_seen {
-            return Vec::new();
-        }
-
         let issue = visitor
             .weak_comparison
-            .or(visitor.unvalidated_store)
+            .or_else(|| {
+                if visitor.strict_next_seen {
+                    None
+                } else {
+                    visitor.unvalidated_store
+                }
+            })
             .map(|candidate| match candidate.kind {
                 CandidateKind::WeakComparison(op) => (
                     candidate.span,
@@ -340,6 +342,34 @@ mod tests {
         );
 
         assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    #[test]
+    fn flags_weak_comparison_even_when_another_nonce_check_is_strict() {
+        let findings = NonceMonotonicityRule::new().check(
+            r#"
+            pub fn execute(
+                env: Env,
+                auth_nonce: u64,
+                transfer_nonce: u64,
+            ) {
+                let stored_auth_nonce: u64 =
+                    env.storage().instance().get(&"auth_nonce").unwrap_or(0);
+                if auth_nonce != stored_auth_nonce + 1 {
+                    panic!("invalid auth nonce");
+                }
+
+                let stored_transfer_nonce: u64 =
+                    env.storage().instance().get(&"transfer_nonce").unwrap_or(0);
+                if transfer_nonce <= stored_transfer_nonce {
+                    panic!("replayed transfer nonce");
+                }
+            }
+            "#,
+        );
+
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].message.contains("`<=`"));
     }
 
     #[test]
