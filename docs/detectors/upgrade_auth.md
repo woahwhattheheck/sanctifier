@@ -38,12 +38,21 @@ pub fn upgrade(env: Env, admin: Address, nonce: u64, wasm_hash: BytesN<32>) {
 ## How Sanctifier detects it
 
 The rule examines public free functions and public impl methods that reach the
-upgrade primitive. It looks for `require_auth` or `require_auth_for_args`
-alongside an admin/owner/authority/govern marker, plus a nonce-shaped identifier
-or literal. Private helpers and functions without an upgrade call are ignored.
+upgrade primitive. Administrator authorization must be a `require_auth` or
+`require_auth_for_args` call bound to an `Address`-typed parameter whose name
+is administrator-shaped (admin/owner/authority/govern), either as a method call
+or validated `Address::require_auth*` UFCS. Auth-looking helper functions or
+macros are not accepted.
+
+Replay protection is recognized only when the same upgrade path contains both a
+nonce-shaped comparison/assertion and a nonce-related state mutation. A bare
+nonce reference, a positive/range check by itself, or a mutation without
+validation does not suppress the finding. Private helpers and functions without
+an upgrade call are ignored.
 
 This is a structural, intraprocedural check. Guards hidden behind opaque helper
-functions may not be recognized, and the rule does not prove nonce semantics.
+functions may not be recognized, and the rule does not prove full nonce
+semantics or cross-function state flow.
 
 ## References
 
