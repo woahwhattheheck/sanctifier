@@ -39,10 +39,11 @@ pub fn upgrade(env: Env, admin: Address, nonce: u64, wasm_hash: BytesN<32>) {
 
 The rule examines public free functions and public impl methods that reach the
 upgrade primitive. Administrator authorization must be a `require_auth` or
-`require_auth_for_args` call bound to an `Address`-typed parameter whose name
-is administrator-shaped (admin/owner/authority/govern), either as a method call
-or validated `Address::require_auth*` UFCS. Auth-looking helper functions or
-macros are not accepted.
+`require_auth_for_args` call bound to an administrator-shaped
+(admin/owner/authority/govern) `Address` binding. The binding may be a function
+parameter or an explicitly typed local such as an owner loaded from contract
+storage, and auth may use a method call or validated `Address::require_auth*`
+UFCS. Auth-looking helper functions or macros are not accepted.
 
 Replay protection is recognized only when the same upgrade path contains both a
 nonce-shaped comparison/assertion and a nonce-related state mutation. A bare
