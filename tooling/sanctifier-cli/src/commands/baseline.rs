@@ -307,3 +307,41 @@ fn load_config(path: &Path) -> SanctifyConfig {
     }
     SanctifyConfig::default()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_rule_fingerprint_distinguishes_matches_but_ignores_line_shifts() {
+        let first = sanctifier_core::CustomRuleMatch {
+            rule_name: "same-rule".to_string(),
+            line: 4,
+            snippet: "first_match();".to_string(),
+            severity: sanctifier_core::RuleSeverity::Warning,
+        };
+        let shifted = sanctifier_core::CustomRuleMatch {
+            rule_name: first.rule_name.clone(),
+            line: 40,
+            snippet: first.snippet.clone(),
+            severity: first.severity.clone(),
+        };
+        let second = sanctifier_core::CustomRuleMatch {
+            rule_name: first.rule_name.clone(),
+            line: 8,
+            snippet: "second_match();".to_string(),
+            severity: first.severity.clone(),
+        };
+
+        let first_fp =
+            custom_rule_flat_finding(&first, "src/lib.rs", &first.snippet).fingerprint();
+        let shifted_fp =
+            custom_rule_flat_finding(&shifted, "src/lib.rs", &shifted.snippet).fingerprint();
+        let second_fp =
+            custom_rule_flat_finding(&second, "src/lib.rs", &second.snippet).fingerprint();
+
+        assert_eq!(first_fp, shifted_fp);
+        assert_ne!(first_fp, second_fp);
+    }
+}
