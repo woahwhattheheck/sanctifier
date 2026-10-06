@@ -89,6 +89,17 @@ pub fn exec(args: BaselineArgs) -> anyhow::Result<()> {
         };
 
         if let Some(output) = &args.output {
+            if let (Ok(output_resolved), Ok(baseline_resolved)) = (
+                fs::canonicalize(output),
+                fs::canonicalize(&baseline_path),
+            ) {
+                if output_resolved == baseline_resolved {
+                    anyhow::bail!(
+                        "--output cannot overwrite the stored {}",
+                        BASELINE_FILE
+                    );
+                }
+            }
             fs::write(output, rendered)?;
         } else {
             print!("{rendered}");
