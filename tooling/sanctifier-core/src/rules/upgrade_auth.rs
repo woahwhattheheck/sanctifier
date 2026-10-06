@@ -34,6 +34,7 @@ impl UpgradeAuthRule {
             has_admin_auth: false,
             has_nonce_validation: false,
             has_nonce_consumption: false,
+            nonce_bindings: BTreeSet::new(),
         };
         guard.visit_block(block);
 
@@ -135,6 +136,7 @@ struct UpgradeGuardVisitor<'a> {
     has_admin_auth: bool,
     has_nonce_validation: bool,
     has_nonce_consumption: bool,
+    nonce_bindings: BTreeSet<String>,
 }
 
 fn is_admin_marker(value: &str) -> bool {
@@ -186,13 +188,18 @@ fn receiver_ident(expr: &syn::Expr) -> Option<String> {
 }
 
 #[derive(Default)]
-struct MarkerVisitor {
+struct MarkerVisitor<'a> {
     has_nonce: bool,
+    nonce_bindings: Option<&'a BTreeSet<String>>,
 }
 
-impl<'ast> Visit<'ast> for MarkerVisitor {
+impl<'ast> Visit<'ast> for MarkerVisitor<'_> {
     fn visit_ident(&mut self, node: &'ast proc_macro2::Ident) {
-        self.has_nonce |= is_nonce_marker(&node.to_string());
+        let name = node.to_string();
+        self.has_nonce |= is_nonce_marker(&name)
+            || self
+                .nonce_bindings
+                .is_some_and(|bindings| bindings.contains(&name));
     }
 
     fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
@@ -206,7 +213,57 @@ fn expr_has_nonce_marker(expr: &syn::Expr) -> bool {
     marker.has_nonce
 }
 
+fn expr_has_nonce_marker_or_binding(
+    expr: &syn::Expr,
+    nonce_bindings: &BTreeSet<String>,
+) -> bool {
+    let mut marker = MarkerVisitor {
+        has_nonce: false,
+        nonce_bindings: Some(nonce_bindings),
+    };
+    marker.visit_expr(expr);
+    marker.has_nonce
+}
+
+fn local_binding_ident(pat: &syn::Pat) -> Option<String> {
+    match pat {
+        syn::Pat::Ident(ident) => Some(ident.ident.to_string()),
+        syn::Pat::Type(typed) => local_binding_ident(&typed.pat),
+        _ => None,
+    }
+}
+
+fn nonce_related_ident_count(
+    tokens: proc_macro2::TokenStream,
+    nonce_bindings: &BTreeSet<String>,
+) -> usize {
+    tokens
+        .into_iter()
+        .map(|token| match token {
+            proc_macro2::TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                usize::from(is_nonce_marker(&name) || nonce_bindings.contains(&name))
+            }
+            proc_macro2::TokenTree::Group(group) => {
+                nonce_related_ident_count(group.stream(), nonce_bindings)
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
 impl<'ast> Visit<'ast> for UpgradeGuardVisitor<'_> {
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if let Some(init) = &node.init {
+            if expr_has_nonce_marker_or_binding(&init.expr, &self.nonce_bindings) {
+                if let Some(name) = local_binding_ident(&node.pat) {
+                    self.nonce_bindings.insert(name);
+                }
+            }
+        }
+        visit::visit_local(self, node);
+    }
+
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let name = node.method.to_string();
 
@@ -269,8 +326,8 @@ impl<'ast> Visit<'ast> for UpgradeGuardVisitor<'_> {
                 | syn::BinOp::Le(_)
                 | syn::BinOp::Gt(_)
                 | syn::BinOp::Ge(_)
-        ) && expr_has_nonce_marker(&node.left)
-            && expr_has_nonce_marker(&node.right)
+        ) && expr_has_nonce_marker_or_binding(&node.left, &self.nonce_bindings)
+            && expr_has_nonce_marker_or_binding(&node.right, &self.nonce_bindings)
         {
             self.has_nonce_validation = true;
         }
@@ -284,13 +341,7 @@ impl<'ast> Visit<'ast> for UpgradeGuardVisitor<'_> {
             if matches!(
                 name.as_str(),
                 "assert" | "assert_eq" | "assert_ne" | "debug_assert" | "debug_assert_eq" | "debug_assert_ne"
-            ) && node
-                .tokens
-                .to_string()
-                .to_ascii_lowercase()
-                .matches("nonce")
-                .count()
-                >= 2
+            ) && nonce_related_ident_count(node.tokens.clone(), &self.nonce_bindings) >= 2
             {
                 self.has_nonce_validation = true;
             }
@@ -345,6 +396,21 @@ impl Contract {
         env.storage().instance().set(&"upgrade_nonce", &(stored_nonce + 1));
         env.deployer().update_current_contract_wasm(wasm_hash);
     }
+}
+"#;
+
+        assert!(UpgradeAuthRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn accepts_nonce_derived_local_guard() {
+        let source = r#"
+pub fn upgrade(env: Env, admin: Address, nonce: u64, wasm_hash: BytesN<32>) {
+    admin.require_auth_for_args((nonce, wasm_hash.clone()));
+    let current: u64 = env.storage().instance().get(&"upgrade_nonce").unwrap_or(0);
+    assert_eq!(current, nonce);
+    env.storage().instance().set(&"upgrade_nonce", &(current + 1));
+    env.deployer().update_current_contract_wasm(wasm_hash);
 }
 "#;
 
