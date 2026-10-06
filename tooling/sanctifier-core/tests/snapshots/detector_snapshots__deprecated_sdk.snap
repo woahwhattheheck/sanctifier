@@ -9,9 +9,9 @@ expression: findings
   suggestion: "Use Env::logs() instead."
 - rule_name: S014
   severity: Warning
-  message: "S014: deprecated soroban_sdk API 'Events::publish(..)' is still in use"
+  message: "S014: deprecated soroban_sdk API 'Logs::log(..)' is still in use"
   location: "legacy:7"
-  suggestion: "Use #[contractevent] plus Events::publish_event(..) instead."
+  suggestion: "Use Logs::add(..) (or the log! macro) instead."
 - rule_name: S014
   severity: Warning
   message: "S014: deprecated soroban_sdk API 'Prng::u64_in_range(..)' is still in use"
