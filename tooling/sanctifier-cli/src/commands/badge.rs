@@ -111,7 +111,8 @@ impl SeverityCounts {
     fn add_named_severity(&mut self, severity: Option<&str>) {
         match severity.unwrap_or("medium").to_ascii_lowercase().as_str() {
             "critical" => self.critical += 1,
-            "high" => self.high += 1,
+            "high" | "error" => self.high += 1,
+            "medium" | "warning" => self.medium += 1,
             "low" | "info" => self.low += 1,
             _ => self.medium += 1,
         }
@@ -470,21 +471,32 @@ mod tests {
     fn custom_rule_severity_is_preserved() {
         let report: AnalyzeReport = serde_json::from_str(r#"{
           "summary": {
-            "total_findings": 1,
+            "total_findings": 3,
             "has_critical": false,
-            "has_high": false
+            "has_high": true
           },
           "findings": {
-            "custom_rules": [{"severity": "critical"}]
+            "custom_rules": [
+              {"severity": "error"},
+              {"severity": "warning"},
+              {"severity": "info"}
+            ]
           }
         }"#).expect("report fixture should parse");
 
         let counts = severity_counts(&report);
-        assert_eq!(counts.critical, 1);
-        assert_eq!(counts.medium, 0);
+        assert_eq!(
+            counts,
+            SeverityCounts {
+                critical: 0,
+                high: 1,
+                medium: 1,
+                low: 1,
+            }
+        );
         let grade = badge_presentation(&report, "grade").unwrap();
-        assert_eq!(grade.value, "F");
-        assert_eq!(grade.color, SecurityStatus::Critical.color());
+        assert_eq!(grade.value, "D");
+        assert_eq!(grade.color, SecurityStatus::Warning.color());
     }
 
     #[test]
