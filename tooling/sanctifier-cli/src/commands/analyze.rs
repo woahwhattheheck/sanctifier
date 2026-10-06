@@ -295,11 +295,21 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         path.to_path_buf()
     };
 
-    // Match the baseline snapshot contract, including single-file custom scans.
+    // Match the baseline snapshot contract. Directory and single-file scans both
+    // prefix custom snippets with `file:line: `; retain the raw source snippet as
+    // semantic context so separate matches from one rule do not collapse together.
+    let custom_fallback_file = path.display().to_string();
     let custom_flat_finding = |m: &sanctifier_core::CustomRuleMatch| {
         let marker = format!(":{}: ", m.line);
-        let file_name = m.snippet.split_once(marker.as_str()).map(|(file, _)| file).unwrap_or("");
-        super::baseline::custom_rule_flat_finding(m, file_name)
+        if let Some((file_name, source_snippet)) = m.snippet.split_once(marker.as_str()) {
+            super::baseline::custom_rule_flat_finding(m, file_name, source_snippet)
+        } else {
+            super::baseline::custom_rule_flat_finding(
+                m,
+                &custom_fallback_file,
+                &m.snippet,
+            )
+        }
     };
 
     let (suppressed_count, stale_entries) = if !args.no_baseline {
@@ -483,9 +493,13 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         !auth_gaps.is_empty()
         || panic_issues.iter().any(|p| p.issue_type == "panic!")
         || vuln_matches.iter().any(|m| m.severity.eq_ignore_ascii_case("critical"));
-    let has_high = vuln_matches.iter().any(|m| {
-        m.severity.eq_ignore_ascii_case("critical") || m.severity.eq_ignore_ascii_case("high")
-    }) || !arithmetic_issues.is_empty()
+    let has_high = custom_matches
+        .iter()
+        .any(|m| matches!(&m.severity, sanctifier_core::RuleSeverity::Error))
+        || vuln_matches.iter().any(|m| {
+            m.severity.eq_ignore_ascii_case("critical") || m.severity.eq_ignore_ascii_case("high")
+        })
+        || !arithmetic_issues.is_empty()
         || !panic_issues.is_empty()
         || !smt_issues.is_empty()
         || !unhandled_results.is_empty()
