@@ -98,7 +98,16 @@ fn test_analyze_ndjson_stream_is_line_delimited() {
     assert!(records.iter().all(|record| {
         record["schema"].as_str() == Some("sanctifier-ndjson-v1")
     }));
-    assert!(records.iter().any(|record| record["type"] == "finding"));
+    let finding_count = records
+        .iter()
+        .filter(|record| record["type"] == "finding")
+        .count();
+    assert!(finding_count > 0);
+    assert_eq!(
+        records.last().unwrap()["data"]["total_findings"].as_u64(),
+        Some(finding_count as u64),
+        "summary total must match emitted finding records"
+    );
     assert!(records
         .iter()
         .filter(|record| record["type"] == "finding")
