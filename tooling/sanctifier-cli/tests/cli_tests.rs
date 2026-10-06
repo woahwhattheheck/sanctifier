@@ -71,6 +71,71 @@ fn test_analyze_json_output() {
 }
 
 #[test]
+fn test_analyze_rule_enablement_honors_exact_overrides() {
+    let temp_dir = tempdir().unwrap();
+    let contract = temp_dir.path().join("contract.rs");
+    let fixture = env::current_dir()
+        .unwrap()
+        .join("tests/fixtures/vulnerable_contract.rs");
+    fs::copy(&fixture, &contract).unwrap();
+
+    let config = temp_dir.path().join(".sanctify.toml");
+    fs::write(
+        &config,
+        r#"
+enabled_rules = ["auth_gaps", "panics", "arithmetic", "ledger_size", "events"]
+
+[rules.auth_gap]
+enabled = false
+
+[rules.panic_detection]
+enabled = false
+
+[rules.arithmetic_overflow]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    let disabled = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("analyze")
+        .arg(&contract)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&disabled.stdout).unwrap();
+    assert!(report["auth_gaps"].as_array().unwrap().is_empty());
+    assert!(report["panic_issues"].as_array().unwrap().is_empty());
+    assert!(report["arithmetic_issues"].as_array().unwrap().is_empty());
+
+    fs::write(
+        &config,
+        r#"
+enabled_rules = []
+
+[rules.panic_detection]
+enabled = true
+"#,
+    )
+    .unwrap();
+
+    let reenabled = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("analyze")
+        .arg(&contract)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&reenabled.stdout).unwrap();
+    assert!(!report["panic_issues"].as_array().unwrap().is_empty());
+    assert!(report["auth_gaps"].as_array().unwrap().is_empty());
+    assert!(report["arithmetic_issues"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn test_analyze_empty_macro_heavy() {
     let mut cmd = Command::cargo_bin("sanctifier").unwrap();
     let fixture_path = env::current_dir()
