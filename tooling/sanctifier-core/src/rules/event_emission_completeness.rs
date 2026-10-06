@@ -157,11 +157,20 @@ impl<'ast> Visit<'ast> for FunctionEffectVisitor {
 }
 
 fn is_storage_receiver(receiver: &syn::Expr) -> bool {
-    let rendered = quote::quote!(#receiver).to_string();
-    rendered.contains("storage")
-        || rendered.contains("persistent")
-        || rendered.contains("temporary")
-        || rendered.contains("instance")
+    match receiver {
+        syn::Expr::MethodCall(call) if call.method == "storage" => true,
+        syn::Expr::MethodCall(call)
+            if matches!(
+                call.method.to_string().as_str(),
+                "persistent" | "temporary" | "instance"
+            ) =>
+        {
+            is_storage_receiver(&call.receiver)
+        }
+        syn::Expr::Paren(paren) => is_storage_receiver(&paren.expr),
+        syn::Expr::Group(group) => is_storage_receiver(&group.expr),
+        _ => false,
+    }
 }
 
 fn events_chain(expr: &syn::Expr) -> bool {
@@ -190,4 +199,28 @@ fn has_cfg_test(attrs: &[Attribute]) -> bool {
             _ => false,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ignores_non_soroban_receivers_with_storage_like_names() {
+        let source = r#"
+            #[contractimpl]
+            impl Contract {
+                pub fn emit(env: Env) {
+                    env.events().publish((Symbol::new(&env, "changed"),), ());
+                }
+
+                pub fn cache_only(instance_cache: Cache, storage_adapter: Cache) {
+                    instance_cache.set("a", 1);
+                    storage_adapter.update("b", 2);
+                }
+            }
+        "#;
+
+        assert!(EventEmissionCompletenessRule::new().check(source).is_empty());
+    }
 }
