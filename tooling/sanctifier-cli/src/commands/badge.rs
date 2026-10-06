@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,11 +21,28 @@ pub struct BadgeArgs {
     /// Public URL for the SVG (used by markdown output). Falls back to local SVG path.
     #[arg(long)]
     pub badge_url: Option<String>,
+
+    /// Badge content to render.
+    #[arg(long, value_enum, default_value = "status")]
+    pub variant: BadgeVariant,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum BadgeVariant {
+    #[default]
+    Status,
+    Severity,
+    Grade,
+    Trend,
 }
 
 #[derive(Debug, Deserialize)]
 struct AnalyzeReport {
     summary: AnalyzeSummary,
+    #[serde(default)]
+    baseline: AnalyzeBaseline,
+    #[serde(default)]
+    findings: AnalyzeFindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +50,45 @@ struct AnalyzeSummary {
     total_findings: usize,
     has_critical: bool,
     has_high: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AnalyzeBaseline {
+    #[serde(default)]
+    stale_entries: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AnalyzeFindings {
+    #[serde(default)]
+    auth_gaps: Vec<serde_json::Value>,
+    #[serde(default)]
+    panic_issues: Vec<AnalyzePanicIssue>,
+    #[serde(default)]
+    arithmetic_issues: Vec<serde_json::Value>,
+    #[serde(default)]
+    ledger_size_warnings: Vec<AnalyzeSizeWarning>,
+    #[serde(default)]
+    unhandled_results: Vec<serde_json::Value>,
+    #[serde(default)]
+    smt_issues: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyzePanicIssue {
+    issue_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyzeSizeWarning {
+    level: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BadgePresentation {
+    label: &'static str,
+    value: String,
+    color: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,15 +122,22 @@ pub fn exec(args: BadgeArgs) -> anyhow::Result<()> {
     let report: AnalyzeReport = serde_json::from_str(&report_content)
         .with_context(|| format!("failed to parse JSON report: {}", args.report.display()))?;
 
-    let status = derive_status(&report.summary);
-    let svg = generate_badge_svg("Sanctifier", status.text(), status.color());
+    let presentation = badge_presentation(&report, args.variant);
+    let svg = generate_badge_svg(
+        presentation.label,
+        &presentation.value,
+        presentation.color,
+    );
 
     write_text_file(&args.svg_output, &svg)?;
 
     let markdown_url = args
         .badge_url
         .unwrap_or_else(|| normalize_path_for_markdown(&args.svg_output));
-    let markdown = format!("![Sanctifier: {}]({})", status.text(), markdown_url);
+    let markdown = format!(
+        "![{}: {}]({})",
+        presentation.label, presentation.value, markdown_url
+    );
 
     if let Some(md_path) = args.markdown_output {
         write_text_file(&md_path, &(markdown.clone() + "\n"))?;
@@ -84,7 +147,7 @@ pub fn exec(args: BadgeArgs) -> anyhow::Result<()> {
     }
 
     println!("Badge generated at {}", args.svg_output.display());
-    println!("Current status: {}", status.text());
+    println!("Badge value: {}", presentation.value);
     Ok(())
 }
 
@@ -107,6 +170,84 @@ fn derive_status(summary: &AnalyzeSummary) -> SecurityStatus {
         SecurityStatus::Warning
     } else {
         SecurityStatus::Secure
+    }
+}
+
+fn severity_counts(report: &AnalyzeReport) -> (usize, usize) {
+    let critical_panics = report
+        .findings
+        .panic_issues
+        .iter()
+        .filter(|issue| issue.issue_type == "panic!")
+        .count();
+    let high_panics = report
+        .findings
+        .panic_issues
+        .len()
+        .saturating_sub(critical_panics);
+    let critical = report.findings.auth_gaps.len() + critical_panics;
+    let high = high_panics
+        + report.findings.arithmetic_issues.len()
+        + report.findings.unhandled_results.len()
+        + report.findings.smt_issues.len()
+        + report
+            .findings
+            .ledger_size_warnings
+            .iter()
+            .filter(|warning| warning.level == "ExceedsLimit")
+            .count();
+    (critical, high)
+}
+
+fn derive_grade(summary: &AnalyzeSummary) -> &'static str {
+    if summary.has_critical {
+        "F"
+    } else if summary.has_high {
+        "C"
+    } else if summary.total_findings > 0 {
+        "B"
+    } else {
+        "A"
+    }
+}
+
+fn badge_presentation(report: &AnalyzeReport, variant: BadgeVariant) -> BadgePresentation {
+    let status = derive_status(&report.summary);
+    match variant {
+        BadgeVariant::Status => BadgePresentation {
+            label: "Sanctifier",
+            value: status.text().to_string(),
+            color: status.color(),
+        },
+        BadgeVariant::Severity => {
+            let (critical, high) = severity_counts(report);
+            BadgePresentation {
+                label: "Sanctifier severity",
+                value: format!(
+                    "C:{critical} H:{high} T:{}",
+                    report.summary.total_findings
+                ),
+                color: status.color(),
+            }
+        }
+        BadgeVariant::Grade => BadgePresentation {
+            label: "Sanctifier grade",
+            value: derive_grade(&report.summary).to_string(),
+            color: status.color(),
+        },
+        BadgeVariant::Trend => BadgePresentation {
+            label: "Sanctifier trend",
+            value: format!(
+                "+{} / -{}",
+                report.summary.total_findings,
+                report.baseline.stale_entries.len()
+            ),
+            color: if report.summary.total_findings == 0 {
+                SecurityStatus::Secure.color()
+            } else {
+                status.color()
+            },
+        },
     }
 }
 
@@ -195,6 +336,66 @@ mod tests {
     }
 
     #[test]
+    fn variants_use_current_report_and_baseline_semantics() {
+        let report: AnalyzeReport = serde_json::from_str(r#"{
+          "summary": {
+            "total_findings": 7,
+            "has_critical": true,
+            "has_high": true
+          },
+          "baseline": {
+            "stale_entries": [{}, {}]
+          },
+          "findings": {
+            "auth_gaps": [{}],
+            "panic_issues": [
+              {"issue_type": "panic!"},
+              {"issue_type": "unwrap"}
+            ],
+            "arithmetic_issues": [{}],
+            "ledger_size_warnings": [
+              {"level": "ExceedsLimit"},
+              {"level": "ApproachingLimit"}
+            ],
+            "unhandled_results": [{}],
+            "smt_issues": [{}]
+          }
+        }"#).expect("report fixture should parse");
+
+        assert_eq!(severity_counts(&report), (2, 5));
+        assert_eq!(
+            badge_presentation(&report, BadgeVariant::Severity).value,
+            "C:2 H:5 T:7"
+        );
+        assert_eq!(
+            badge_presentation(&report, BadgeVariant::Grade).value,
+            "F"
+        );
+        assert_eq!(
+            badge_presentation(&report, BadgeVariant::Trend).value,
+            "+7 / -2"
+        );
+    }
+
+    #[test]
+    fn grade_preserves_status_boundaries() {
+        let cases = [
+            (0, false, false, "A"),
+            (2, false, false, "B"),
+            (2, false, true, "C"),
+            (2, true, true, "F"),
+        ];
+        for (total_findings, has_critical, has_high, expected) in cases {
+            let summary = AnalyzeSummary {
+                total_findings,
+                has_critical,
+                has_high,
+            };
+            assert_eq!(derive_grade(&summary), expected);
+        }
+    }
+
+    #[test]
     fn exec_writes_svg_and_markdown_files() {
         let tmp = TempDir::new().expect("temp dir should be created");
         let report_path = tmp.path().join("report.json");
@@ -215,6 +416,7 @@ mod tests {
             svg_output: svg_path.clone(),
             markdown_output: Some(md_path.clone()),
             badge_url: Some("https://example.com/sanctifier-security.svg".to_string()),
+            variant: BadgeVariant::Status,
         };
         exec(args).expect("badge command should succeed");
 
