@@ -100,7 +100,7 @@ fn exec_loop(path: PathBuf, debounce_ms: u64, analyze_args: Vec<OsString>) -> an
         }
     }
 
-    println!("\n{} Watch stopped.", "✓".green());
+    eprintln!("\n{} Watch stopped.", "✓".green());
     Ok(())
 }
 
