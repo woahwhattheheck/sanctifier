@@ -9,12 +9,12 @@
 //   - Lines of code (LOC)
 //   - Number of extern crate / use dependencies (file-level)
 
-use syn::{visit::Visit, File, ImplItem, ImplItemFn, ItemFn, ItemUse, ItemExternCrate};
+use syn::{visit::Visit, File, ImplItemFn, ItemExternCrate, ItemFn, ItemUse};
 
 // ---------------------------------------------------------------------------
 // Thresholds (warn if exceeded)
 // ---------------------------------------------------------------------------
-const THRESHOLD_CYCLOMATIC: u32 = 10;
+pub const THRESHOLD_CYCLOMATIC: u32 = 10;
 const THRESHOLD_PARAMS: usize   = 5;
 const THRESHOLD_NESTING: u32    = 4;
 const THRESHOLD_LOC: usize      = 50;
@@ -108,7 +108,7 @@ impl<'ast> Visit<'ast> for FnComplexityVisitor {
     // &&, || add logical branches
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
         use syn::BinOp::*;
-        if matches!(node.op, And(_) | Or(_)) {
+        if matches!(&node.op, And(_) | Or(_)) {
             self.cyclomatic += 1;
         }
         syn::visit::visit_expr_binary(self, node);
@@ -183,7 +183,7 @@ impl<'ast> Visit<'ast> for FileVisitor {
 
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         // Only public functions
-        if matches!(node.vis, syn::Visibility::Public(_)) {
+        if matches!(&node.vis, syn::Visibility::Public(_)) {
             let span_str = quote::quote!(#node).to_string();
             let m = self.analyze_fn(&node.sig.ident.to_string(), &node.sig, &node.block, &span_str);
             self.functions.push(m);
