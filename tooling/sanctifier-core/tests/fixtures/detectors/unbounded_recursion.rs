@@ -25,4 +25,12 @@ impl Recursor {
         }
         Self::bounded_countdown(env, depth - 1);
     }
+
+    pub fn same_name_on_other_value(helper: Helper) {
+        helper.same_name_on_other_value();
+    }
+
+    pub fn same_name_on_other_type(env: Env) {
+        Helper::same_name_on_other_type(env);
+    }
 }
