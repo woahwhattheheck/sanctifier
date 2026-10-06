@@ -54,9 +54,19 @@ pub fn exec(args: WatchArgs) -> anyhow::Result<()> {
 /// Run `sanctifier analyze --watch` through the same watcher while preserving
 /// the one-shot analyze options for each child invocation.
 pub fn exec_analyze(args: AnalyzeArgs) -> anyhow::Result<()> {
-    let path = args.path.clone();
+    let path = watch_root(&args.path);
     let analyze_args = analyze_child_args(&args);
     exec_loop(path, 300, analyze_args)
+}
+
+fn watch_root(path: &Path) -> PathBuf {
+    if path.is_file() {
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn exec_loop(path: PathBuf, debounce_ms: u64, analyze_args: Vec<OsString>) -> anyhow::Result<()> {
@@ -262,6 +272,16 @@ mod tests {
             ]
         );
         assert!(!rendered.iter().any(|arg| arg == "--path"));
+    }
+
+    #[test]
+    fn cargo_manifest_watch_uses_parent_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manifest = temp_dir.path().join("Cargo.toml");
+        std::fs::write(&manifest, "[package]\nname = \"watch-root\"\nversion = \"0.1.0\"\n").unwrap();
+
+        assert_eq!(watch_root(&manifest), temp_dir.path());
+        assert_eq!(watch_root(temp_dir.path()), temp_dir.path());
     }
 
     #[test]
