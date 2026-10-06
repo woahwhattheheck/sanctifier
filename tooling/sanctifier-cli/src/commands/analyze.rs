@@ -14,6 +14,159 @@ use std::path::{Path, PathBuf};
 
 use crate::vulndb::{VulnDatabase, VulnMatch};
 
+
+const WEAK_SUPPRESSION_JUSTIFICATION_MIN_NON_WHITESPACE: usize = 12;
+
+#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum InlineSuppressionStatus {
+    Valid,
+    WeakJustification,
+    MissingJustification,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+struct InlineSuppressionAuditEntry {
+    file: String,
+    line: usize,
+    code: String,
+    justification: Option<String>,
+    status: InlineSuppressionStatus,
+}
+
+fn is_weak_suppression_justification(reason: &str) -> bool {
+    let reason = reason.trim();
+    let compact_len = reason.chars().filter(|ch| !ch.is_whitespace()).count();
+    let normalized = reason.to_ascii_lowercase();
+    let generic = matches!(
+        normalized.as_str(),
+        "ok"
+            | "ignore"
+            | "ignored"
+            | "false positive"
+            | "fp"
+            | "n/a"
+            | "na"
+            | "todo"
+            | "temporary"
+            | "temp"
+    );
+
+    compact_len < WEAK_SUPPRESSION_JUSTIFICATION_MIN_NON_WHITESPACE || generic
+}
+
+fn parse_inline_suppressions(file_path: &str, content: &str) -> Vec<InlineSuppressionAuditEntry> {
+    let mut entries = Vec::new();
+
+    for (index, line) in content.lines().enumerate() {
+        let Some(marker_index) = line.find("// sanctifier-ignore:") else {
+            continue;
+        };
+
+        let rest = line[marker_index + "// sanctifier-ignore:".len()..].trim();
+        let (code, justification) = match rest.split_once('-') {
+            Some((code, reason)) => {
+                let reason = reason.trim();
+                let justification = (!reason.is_empty()).then(|| reason.to_string());
+                (code.trim().to_string(), justification)
+            }
+            None => (rest.trim().to_string(), None),
+        };
+
+        let status = match justification.as_deref() {
+            None => InlineSuppressionStatus::MissingJustification,
+            Some(reason) if is_weak_suppression_justification(reason) => {
+                InlineSuppressionStatus::WeakJustification
+            }
+            Some(_) => InlineSuppressionStatus::Valid,
+        };
+
+        entries.push(InlineSuppressionAuditEntry {
+            file: file_path.to_string(),
+            line: index + 1,
+            code,
+            justification,
+            status,
+        });
+    }
+
+    entries
+}
+
+fn active_inline_suppressions(
+    entries: &[InlineSuppressionAuditEntry],
+) -> Vec<(usize, String, String)> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry.justification.as_ref().map(|justification| {
+                (entry.line, entry.code.clone(), justification.clone())
+            })
+        })
+        .collect()
+}
+
+fn collect_inline_suppression_audit(
+    path: &Path,
+    config: &SanctifyConfig,
+) -> Vec<InlineSuppressionAuditEntry> {
+    let mut entries = Vec::new();
+
+    if path.is_file() {
+        if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+            if let Ok(content) = fs::read_to_string(path) {
+                entries.extend(parse_inline_suppressions(
+                    &path.display().to_string(),
+                    &content,
+                ));
+            }
+        }
+    } else {
+        collect_inline_suppression_audit_dir(path, config, &mut entries);
+    }
+
+    entries.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.code.cmp(&right.code))
+    });
+    entries
+}
+
+fn collect_inline_suppression_audit_dir(
+    dir: &Path,
+    config: &SanctifyConfig,
+    entries: &mut Vec<InlineSuppressionAuditEntry>,
+) {
+    let Ok(children) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for child in children.flatten() {
+        let path = child.path();
+
+        if path.is_dir() {
+            let ignored = config.ignore_paths.iter().any(|ignored| path.ends_with(ignored));
+            if !ignored {
+                collect_inline_suppression_audit_dir(&path, config, entries);
+            }
+            continue;
+        }
+
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+
+        if let Ok(content) = fs::read_to_string(&path) {
+            entries.extend(parse_inline_suppressions(
+                &path.display().to_string(),
+                &content,
+            ));
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct AnalyzeArgs {
     /// Path to the contract directory or Cargo.toml
@@ -191,34 +344,40 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     }
 
     // ── Inline suppression ───────────────────────────────────────────────────
-    let mut inline_suppressions: std::collections::HashMap<String, Vec<(usize, String, String)>> = std::collections::HashMap::new();
+    let suppression_audit = collect_inline_suppression_audit(path, &analyzer.config);
+    let mut inline_suppressions: std::collections::HashMap<
+        String,
+        Vec<(usize, String, String)>,
+    > = std::collections::HashMap::new();
 
-    let mut get_suppressions = |file_path: &str| -> Vec<(usize, String, String)> {
-        if let Some(supps) = inline_suppressions.get(file_path) {
-            return supps.clone();
+    for entry in &suppression_audit {
+        if let Some(justification) = &entry.justification {
+            inline_suppressions
+                .entry(entry.file.clone())
+                .or_default()
+                .push((entry.line, entry.code.clone(), justification.clone()));
         }
-        let mut supps = Vec::new();
-        if let Ok(content) = fs::read_to_string(file_path) {
-            for (i, line) in content.lines().enumerate() {
-                if let Some(idx) = line.find("// sanctifier-ignore:") {
-                    let rest = line[idx + "// sanctifier-ignore:".len()..].trim();
-                    if let Some((code, justification)) = rest.split_once('-') {
-                        let justification = justification.trim();
-                        if justification.is_empty() {
-                            if !is_json {
-                                eprintln!("{} Warning: Inline suppression missing justification at {}:{}", "⚠️".yellow(), file_path, i + 1);
-                            }
-                        } else {
-                            supps.push((i + 1, code.trim().to_string(), justification.to_string()));
-                        }
-                    } else if !is_json {
-                        eprintln!("{} Warning: Inline suppression missing justification at {}:{}", "⚠️".yellow(), file_path, i + 1);
-                    }
-                }
-            }
+    }
+
+    if !is_json {
+        for entry in suppression_audit
+            .iter()
+            .filter(|entry| entry.status == InlineSuppressionStatus::MissingJustification)
+        {
+            eprintln!(
+                "{} Warning: Inline suppression missing justification at {}:{}",
+                "⚠️".yellow(),
+                entry.file,
+                entry.line
+            );
         }
-        inline_suppressions.insert(file_path.to_string(), supps.clone());
-        supps
+    }
+
+    let get_suppressions = |file_path: &str| -> Vec<(usize, String, String)> {
+        inline_suppressions
+            .get(file_path)
+            .cloned()
+            .unwrap_or_default()
     };
 
     let extract_line_and_file = |raw_location: &str| -> Option<(String, usize)> {
@@ -236,7 +395,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         None
     };
 
-    let mut is_inline_suppressed = |raw_location: &str, code: &str| -> bool {
+    let is_inline_suppressed = |raw_location: &str, code: &str| -> bool {
         if let Some((file_path, line_num)) = extract_line_and_file(raw_location) {
             let supps = get_suppressions(&file_path);
             for (s_line, s_code, _) in supps {
@@ -280,7 +439,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         })
     });
 
-    // ── Baseline suppression ─────────────────────────────────────────────────
+    // Baseline suppression
     // Load .sanctify-baseline.json from the project root (if it exists and
     // --no-baseline was not passed) and filter out pre-existing findings.
     let project_root = if path.is_file() {
@@ -509,6 +668,37 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         );
     }
 
+    let suppression_flagged_count = suppression_audit
+        .iter()
+        .filter(|entry| entry.status != InlineSuppressionStatus::Valid)
+        .count();
+
+    if !is_json && !suppression_audit.is_empty() {
+        println!(
+            "{} Inline suppression audit: {} suppression{} ({} flagged)",
+            "ℹ️".blue(),
+            suppression_audit.len(),
+            if suppression_audit.len() == 1 { "" } else { "s" },
+            suppression_flagged_count,
+        );
+        for entry in &suppression_audit {
+            let (marker, status) = match entry.status {
+                InlineSuppressionStatus::Valid => ("OK", "valid"),
+                InlineSuppressionStatus::WeakJustification => ("!!", "weak"),
+                InlineSuppressionStatus::MissingJustification => ("!!", "missing"),
+            };
+            println!(
+                "   {} {}:{} [{}] {} - {}",
+                marker,
+                entry.file,
+                entry.line,
+                entry.code,
+                status,
+                entry.justification.as_deref().unwrap_or("<missing>")
+            );
+        }
+    }
+
     if is_json {
         let stale_json: Vec<serde_json::Value> = stale_entries
             .iter()
@@ -537,6 +727,12 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             "baseline": {
                 "suppressed_count": suppressed_count,
                 "stale_entries": stale_json,
+            },
+            "inline_suppression_audit": {
+                "total": suppression_audit.len(),
+                "flagged": suppression_flagged_count,
+                "weak_justification_min_non_whitespace": WEAK_SUPPRESSION_JUSTIFICATION_MIN_NON_WHITESPACE,
+                "entries": suppression_audit,
             },
             "error_codes": finding_codes::all_finding_codes(),
             "summary": {
@@ -1012,4 +1208,46 @@ fn is_soroban_project(path: &Path) -> bool {
         path.to_path_buf()
     };
     cargo_toml_path.exists()
+}
+
+
+#[cfg(test)]
+mod inline_suppression_audit_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_valid_weak_and_missing_justifications() {
+        let source = r#"
+// sanctifier-ignore:S001 - generated getter is intentionally public for dashboard reads
+// sanctifier-ignore:S002 - ok
+// sanctifier-ignore:S003
+fn demo() {}
+"#;
+
+        let entries = parse_inline_suppressions("contract.rs", source);
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].code, "S001");
+        assert_eq!(entries[0].status, InlineSuppressionStatus::Valid);
+        assert_eq!(entries[1].status, InlineSuppressionStatus::WeakJustification);
+        assert_eq!(
+            entries[2].status,
+            InlineSuppressionStatus::MissingJustification
+        );
+        assert_eq!(entries[2].justification, None);
+    }
+
+    #[test]
+    fn missing_justification_does_not_activate_suppression() {
+        let source = r#"
+// sanctifier-ignore:S001 - reviewed false positive due to generated accessor
+// sanctifier-ignore:S002
+"#;
+        let entries = parse_inline_suppressions("contract.rs", source);
+        let active = active_inline_suppressions(&entries);
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].0, 2);
+        assert_eq!(active[0].1, "S001");
+    }
 }
