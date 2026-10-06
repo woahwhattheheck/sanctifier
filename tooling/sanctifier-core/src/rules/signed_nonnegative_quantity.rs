@@ -160,52 +160,100 @@ fn is_signed_integer(ty: &syn::Type) -> bool {
 }
 
 fn has_nonnegative_guard(block: &syn::Block, target: &str) -> bool {
-    let mut visitor = GuardVisitor {
+    for stmt in &block.stmts {
+        if stmt_is_nonnegative_guard(stmt, target) {
+            return true;
+        }
+        if stmt_mentions_target(stmt, target) {
+            return false;
+        }
+    }
+    false
+}
+
+fn stmt_is_nonnegative_guard(stmt: &syn::Stmt, target: &str) -> bool {
+    match stmt {
+        syn::Stmt::Macro(stmt_macro) => {
+            let name = stmt_macro
+                .mac
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .unwrap_or_default();
+            matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure")
+                && macro_proves_nonnegative(&stmt_macro.mac, target)
+        }
+        syn::Stmt::Expr(expr, _) => expr_is_nonnegative_guard(expr, target),
+        _ => false,
+    }
+}
+
+fn expr_is_nonnegative_guard(expr: &syn::Expr, target: &str) -> bool {
+    match unwrap_parens(expr) {
+        syn::Expr::Macro(expr_macro) => {
+            let name = expr_macro
+                .mac
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+                .unwrap_or_default();
+            matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure")
+                && macro_proves_nonnegative(&expr_macro.mac, target)
+        }
+        syn::Expr::If(expr_if) => {
+            condition_rejects_negative(&expr_if.cond, target)
+                && block_terminates(&expr_if.then_branch)
+        }
+        syn::Expr::Block(expr_block) => has_nonnegative_guard(&expr_block.block, target),
+        _ => false,
+    }
+}
+
+fn stmt_mentions_target(stmt: &syn::Stmt, target: &str) -> bool {
+    let mut visitor = TargetUseVisitor {
         target,
-        guarded: false,
+        found: false,
     };
-    visitor.visit_block(block);
-    visitor.guarded
+    visitor.visit_stmt(stmt);
+    visitor.found
 }
 
-struct GuardVisitor<'a> {
+struct TargetUseVisitor<'a> {
     target: &'a str,
-    guarded: bool,
+    found: bool,
 }
 
-impl<'ast> Visit<'ast> for GuardVisitor<'_> {
-    fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        if self.guarded {
-            return;
-        }
-
-        let name = node
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string())
-            .unwrap_or_default();
-
-        if matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure")
-            && macro_proves_nonnegative(node, self.target)
+impl<'ast> Visit<'ast> for TargetUseVisitor<'_> {
+    fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+        if !self.found
+            && node.path.segments.len() == 1
+            && node.path.segments[0].ident.to_string() == self.target
         {
-            self.guarded = true;
+            self.found = true;
             return;
         }
-
-        syn::visit::visit_macro(self, node);
+        syn::visit::visit_expr_path(self, node);
     }
 
-    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
-        if !self.guarded
-            && condition_rejects_negative(&node.cond, self.target)
-            && block_terminates(&node.then_branch)
-        {
-            self.guarded = true;
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if self.found {
             return;
         }
 
-        syn::visit::visit_expr_if(self, node);
+        let tokens = node.tokens.to_string();
+        if tokens
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .any(|part| part == self.target)
+        {
+            self.found = true;
+        }
+    }
+
+    fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {
+        // Nested functions have their own scope. Their guards cannot establish
+        // a property of the enclosing function's parameter.
     }
 }
 
@@ -301,7 +349,7 @@ fn zero_literal(expr: &syn::Expr) -> bool {
 }
 
 fn block_terminates(block: &syn::Block) -> bool {
-    block.stmts.iter().any(stmt_terminates)
+    block.stmts.last().is_some_and(stmt_terminates)
 }
 
 fn stmt_terminates(stmt: &syn::Stmt) -> bool {
@@ -397,6 +445,36 @@ mod tests {
         let source = r#"
             fn withdraw(amount: i128, allow_negative: bool) {
                 assert!(amount >= 0 || allow_negative);
+                consume(amount);
+            }
+        "#;
+
+        let findings = SignedNonnegativeQuantityRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].message.contains("amount"));
+    }
+
+    #[test]
+    fn guard_after_use_does_not_suppress_finding() {
+        let source = r#"
+            fn withdraw(amount: i128) {
+                consume(amount);
+                assert!(amount >= 0);
+            }
+        "#;
+
+        let findings = SignedNonnegativeQuantityRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].message.contains("amount"));
+    }
+
+    #[test]
+    fn conditional_guard_does_not_suppress_finding() {
+        let source = r#"
+            fn withdraw(amount: i128, validate: bool) {
+                if validate {
+                    assert!(amount >= 0);
+                }
                 consume(amount);
             }
         "#;
