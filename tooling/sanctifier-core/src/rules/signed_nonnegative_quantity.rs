@@ -63,12 +63,12 @@ impl QuantityVisitor {
                 SIGNED_QUANTITY,
                 Severity::Info,
                 format!(
-                    "{SIGNED_QUANTITY}: signed integer `{name}: {ty_text}` represents a                      non-negative balance/amount without an explicit non-negative guard"
+                    "{SIGNED_QUANTITY}: signed integer `{name}: {ty_text}` represents a non-negative balance/amount without an explicit non-negative guard"
                 ),
                 format!("{owner}:{line}"),
             )
             .with_suggestion(format!(
-                "Prefer an unsigned integer when `{name}` cannot be negative, or reject                  `{name} < 0` before using the value"
+                "Prefer an unsigned integer when `{name}` cannot be negative, or reject `{name} < 0` before using the value"
             )),
         );
     }
