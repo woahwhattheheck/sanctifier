@@ -25,4 +25,10 @@ impl Vault {
     pub fn dynamic(env: Env, threshold: u32, extend_to: u32) {
         env.storage().instance().extend_ttl(threshold, extend_to);
     }
+
+    pub fn narrowing_cast_is_valid(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl((300u16 as u8) as u32, 100);
+    }
 }
