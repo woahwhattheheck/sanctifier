@@ -27,9 +27,9 @@ struct DeprecatedApi {
     shape: ApiShape,
 }
 
-// Maintained against the workspace soroban-sdk baseline (20.5.0) using that
-// release's public #[deprecated] annotations. When the workspace SDK advances,
-// refresh this table against the new supported tag.
+// Maintained against callable and macro deprecations in the workspace
+// soroban-sdk baseline (20.5.0). Deprecated modules/type aliases are outside
+// this call-oriented rule's scope. Refresh the table when the SDK advances.
 const DEPRECATED_APIS: &[DeprecatedApi] = &[
     DeprecatedApi {
         display: "Env::logger()",
@@ -105,6 +105,7 @@ impl Rule for DeprecatedSdkRule {
         };
         let mut visitor = DeprecatedSdkVisitor {
             fn_name: String::new(),
+            env_bindings: HashSet::new(),
             seen: HashSet::new(),
             violations: Vec::new(),
         };
@@ -119,6 +120,7 @@ impl Rule for DeprecatedSdkRule {
 
 struct DeprecatedSdkVisitor {
     fn_name: String,
+    env_bindings: HashSet<String>,
     seen: HashSet<(usize, &'static str)>,
     violations: Vec<RuleViolation>,
 }
@@ -146,13 +148,19 @@ impl DeprecatedSdkVisitor {
 impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
         let prev = std::mem::replace(&mut self.fn_name, node.sig.ident.to_string());
+        let prev_env_bindings = std::mem::take(&mut self.env_bindings);
+        collect_env_bindings(&node.sig, &mut self.env_bindings);
         syn::visit::visit_impl_item_fn(self, node);
+        self.env_bindings = prev_env_bindings;
         self.fn_name = prev;
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         let prev = std::mem::replace(&mut self.fn_name, node.sig.ident.to_string());
+        let prev_env_bindings = std::mem::take(&mut self.env_bindings);
+        collect_env_bindings(&node.sig, &mut self.env_bindings);
         syn::visit::visit_item_fn(self, node);
+        self.env_bindings = prev_env_bindings;
         self.fn_name = prev;
     }
 
@@ -160,10 +168,11 @@ impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
         for api in DEPRECATED_APIS {
             let matched = match api.shape {
                 ApiShape::EnvMethod(method) => {
-                    node.method == method && receiver_is_env(&node.receiver)
+                    node.method == method && receiver_is_env(&node.receiver, &self.env_bindings)
                 }
                 ApiShape::EnvAccessorMethod { accessor, method } => {
-                    node.method == method && receiver_is_env_accessor(&node.receiver, accessor)
+                    node.method == method
+                        && receiver_is_env_accessor(&node.receiver, accessor, &self.env_bindings)
                 }
                 ApiShape::AssociatedFn { .. } | ApiShape::Macro(_) => false,
             };
@@ -201,24 +210,63 @@ impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
     }
 }
 
-fn receiver_is_env(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Path(p) => p.path.get_ident().map(|i| i == "env").unwrap_or(false),
-        syn::Expr::Field(f) => match &f.member {
-            syn::Member::Named(name) => name == "env",
-            syn::Member::Unnamed(_) => false,
-        },
-        syn::Expr::Paren(p) => receiver_is_env(&p.expr),
+fn collect_env_bindings(sig: &syn::Signature, bindings: &mut HashSet<String>) {
+    for input in &sig.inputs {
+        let syn::FnArg::Typed(arg) = input else {
+            continue;
+        };
+        if !type_is_env(&arg.ty) {
+            continue;
+        }
+        if let syn::Pat::Ident(pat) = &*arg.pat {
+            bindings.insert(pat.ident.to_string());
+        }
+    }
+}
+
+fn type_is_env(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident == "Env")
+            .unwrap_or(false),
+        syn::Type::Reference(reference) => type_is_env(&reference.elem),
+        syn::Type::Paren(paren) => type_is_env(&paren.elem),
+        syn::Type::Group(group) => type_is_env(&group.elem),
         _ => false,
     }
 }
 
-fn receiver_is_env_accessor(expr: &syn::Expr, accessor: &str) -> bool {
+fn receiver_is_env(expr: &syn::Expr, env_bindings: &HashSet<String>) -> bool {
+    match expr {
+        syn::Expr::Path(p) => p
+            .path
+            .get_ident()
+            .map(|ident| ident == "env" || env_bindings.contains(&ident.to_string()))
+            .unwrap_or(false),
+        syn::Expr::Field(f) => match &f.member {
+            syn::Member::Named(name) => name == "env",
+            syn::Member::Unnamed(_) => false,
+        },
+        syn::Expr::Paren(p) => receiver_is_env(&p.expr, env_bindings),
+        _ => false,
+    }
+}
+
+fn receiver_is_env_accessor(
+    expr: &syn::Expr,
+    accessor: &str,
+    env_bindings: &HashSet<String>,
+) -> bool {
     match expr {
         syn::Expr::MethodCall(call) => {
-            call.method == accessor && call.args.is_empty() && receiver_is_env(&call.receiver)
+            call.method == accessor
+                && call.args.is_empty()
+                && receiver_is_env(&call.receiver, env_bindings)
         }
-        syn::Expr::Paren(p) => receiver_is_env_accessor(&p.expr, accessor),
+        syn::Expr::Paren(p) => receiver_is_env_accessor(&p.expr, accessor, env_bindings),
         _ => false,
     }
 }
