@@ -1,8 +1,7 @@
+use crate::finding_codes::SIGNED_QUANTITY;
 use crate::rules::{Rule, RuleViolation, Severity};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
-
-pub const SIGNED_QUANTITY_CODE: &str = "SANCT_SIGNED_QUANTITY";
 
 /// Advises when a clearly non-negative quantity is represented by a signed
 /// primitive integer without an explicit non-negative guard.
@@ -61,10 +60,10 @@ impl QuantityVisitor {
         let ty_text = quote::quote!(#ty).to_string();
         self.violations.push(
             RuleViolation::new(
-                SIGNED_QUANTITY_CODE,
+                SIGNED_QUANTITY,
                 Severity::Info,
                 format!(
-                    "{SIGNED_QUANTITY_CODE}: signed integer `{name}: {ty_text}` represents a                      non-negative balance/amount without an explicit non-negative guard"
+                    "{SIGNED_QUANTITY}: signed integer `{name}: {ty_text}` represents a                      non-negative balance/amount without an explicit non-negative guard"
                 ),
                 format!("{owner}:{line}"),
             )
