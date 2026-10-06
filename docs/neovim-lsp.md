@@ -19,7 +19,7 @@ The language server uses stdio; the command Neovim starts is `sanctifier lsp --s
 
 ## nvim-lspconfig recipe
 
-Current nvim-lspconfig releases use Neovim's `vim.lsp.config` / `vim.lsp.enable` API. The older `require('lspconfig').….setup{}` interface is deprecated.
+Current nvim-lspconfig releases use Neovim's `vim.lsp.config` / `vim.lsp.enable` API. The older `require('lspconfig').<server>.setup{}` interface is deprecated.
 
 Add this to `init.lua` after nvim-lspconfig is available:
 
