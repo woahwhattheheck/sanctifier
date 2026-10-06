@@ -9,7 +9,6 @@ pub mod bls_subgroup_check;
 pub mod contracterror_enum;
 pub mod cross_contract_call_in_loop;
 pub mod division_by_zero;
-pub mod duplicate_storage_write;
 pub mod eager_unwrap_or;
 pub mod edge_amount;
 pub mod error_code_collision;
@@ -245,7 +244,6 @@ impl RuleRegistry {
         registry.register(view_panic::ViewPanicRule::new());
         registry.register(allowance_race::AllowanceRaceRule::new());
         registry.register(state_write_in_view::StateWriteInViewRule::new());
-        registry.register(duplicate_storage_write::DuplicateStorageWriteRule::new());
         registry.register(division_by_zero::DivisionByZeroRule::new());
         registry.register(eager_unwrap_or::EagerUnwrapOrRule::new());
         registry.register(unsigned_underflow::UnsignedUnderflowRule::new());
