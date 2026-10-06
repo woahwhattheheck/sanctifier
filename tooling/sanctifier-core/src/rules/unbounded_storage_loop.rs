@@ -378,7 +378,7 @@ impl<'ast> Visit<'ast> for InlineBoundVisitor {
 
 fn fixed_bound(expr: &Expr) -> bool {
     match strip_expr(expr) {
-        Expr::Lit(lit) => matches!(lit.lit, syn::Lit::Int(_)),
+        Expr::Lit(lit) => matches!(&lit.lit, syn::Lit::Int(_)),
         Expr::Path(path) => path.path.segments.last().is_some_and(|segment| {
             let ident = segment.ident.to_string();
             ident.chars().any(|ch| ch.is_ascii_uppercase())
