@@ -90,11 +90,9 @@ impl<'ast> Visit<'ast> for ContractVisitor {
             }
 
             let function_name_is_sensitive = is_sensitive_name(&fn_name);
-            let mut reads = StorageReadVisitor { reads: Vec::new() };
-            reads.visit_block(&function.block);
+            let reads = returned_storage_reads(function);
 
             if let Some(read) = reads
-                .reads
                 .into_iter()
                 .find(|read| function_name_is_sensitive || is_sensitive_name(&read.label))
             {
@@ -113,6 +111,36 @@ impl<'ast> Visit<'ast> for ContractVisitor {
                     ),
                 );
             }
+        }
+    }
+}
+
+fn returned_storage_reads(function: &syn::ImplItemFn) -> Vec<StorageRead> {
+    let mut explicit_returns = ReturnReadVisitor { reads: Vec::new() };
+    explicit_returns.visit_block(&function.block);
+    let mut reads = explicit_returns.reads;
+
+    if let Some(syn::Stmt::Expr(expr, None)) = function.block.stmts.last() {
+        if !matches!(expr, syn::Expr::Return(_)) {
+            let mut tail_reads = StorageReadVisitor { reads: Vec::new() };
+            tail_reads.visit_expr(expr);
+            reads.extend(tail_reads.reads);
+        }
+    }
+
+    reads
+}
+
+struct ReturnReadVisitor {
+    reads: Vec<StorageRead>,
+}
+
+impl<'ast> Visit<'ast> for ReturnReadVisitor {
+    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
+        if let Some(expr) = &node.expr {
+            let mut returned = StorageReadVisitor { reads: Vec::new() };
+            returned.visit_expr(expr);
+            self.reads.extend(returned.reads);
         }
     }
 }
@@ -241,6 +269,22 @@ mod tests {
             #[contractimpl]
             impl Contract {
                 pub fn get_owner(env: Env) -> Address {
+                    env.storage().instance().get(&DataKey::Owner).unwrap()
+                }
+            }
+        "#;
+        assert!(SensitiveGetterRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn ignores_sensitive_read_that_is_not_returned() {
+        let source = r#"
+            use soroban_sdk::{contractimpl, Address, Env};
+            #[contractimpl]
+            impl Contract {
+                pub fn get_owner(env: Env) -> Address {
+                    let _signing_key =
+                        env.storage().instance().get(&DataKey::SigningKey);
                     env.storage().instance().get(&DataKey::Owner).unwrap()
                 }
             }
