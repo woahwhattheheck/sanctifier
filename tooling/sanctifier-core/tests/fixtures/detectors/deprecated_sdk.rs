@@ -11,6 +11,10 @@ pub fn legacy(env: Env) {
     panic_error!(&env, Error::Legacy);
 }
 
+pub fn renamed_ctx(ctx: Env) {
+    ctx.logger();
+}
+
 pub fn modern(env: Env) {
     env.logs();
     env.logs().add("modern", &[]);
