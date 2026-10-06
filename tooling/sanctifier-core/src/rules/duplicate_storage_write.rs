@@ -182,12 +182,35 @@ fn direct_storage_set(statement: &syn::Stmt) -> Option<StorageWrite> {
 }
 
 fn storage_kind(expr: &syn::Expr) -> Option<&'static str> {
+    let syn::Expr::MethodCall(call) = expr else {
+        return None;
+    };
+
+    let kind = if call.method == "persistent" {
+        Some("persistent")
+    } else if call.method == "temporary" {
+        Some("temporary")
+    } else if call.method == "instance" {
+        Some("instance")
+    } else {
+        None
+    };
+
+    if let Some(kind) = kind {
+        return has_storage_hop(&call.receiver).then_some(kind);
+    }
+
+    storage_kind(&call.receiver)
+}
+
+fn has_storage_hop(expr: &syn::Expr) -> bool {
     match expr {
-        syn::Expr::MethodCall(call) if call.method == "persistent" => Some("persistent"),
-        syn::Expr::MethodCall(call) if call.method == "temporary" => Some("temporary"),
-        syn::Expr::MethodCall(call) if call.method == "instance" => Some("instance"),
-        syn::Expr::MethodCall(call) => storage_kind(&call.receiver),
-        _ => None,
+        syn::Expr::MethodCall(call) if call.method == "storage" => true,
+        syn::Expr::MethodCall(call) => has_storage_hop(&call.receiver),
+        syn::Expr::Reference(reference) => has_storage_hop(&reference.expr),
+        syn::Expr::Paren(paren) => has_storage_hop(&paren.expr),
+        syn::Expr::Group(group) => has_storage_hop(&group.expr),
+        _ => false,
     }
 }
 
@@ -293,4 +316,21 @@ mod tests {
 
         assert!(DuplicateStorageWriteRule::new().check(source).is_empty());
     }
+    #[test]
+    fn ignores_non_soroban_persistent_receiver() {
+        let source = r#"
+            impl CacheUser {
+                pub fn save(cache: Cache, key: Symbol, value: i128) {
+                    cache.persistent().set(&key, &value);
+                    cache.persistent().set(&key, &value);
+                }
+            }
+        "#;
+
+        assert!(
+            DuplicateStorageWriteRule::new().check(source).is_empty(),
+            "custom APIs named persistent().set() must not be treated as Soroban storage"
+        );
+    }
+
 }
