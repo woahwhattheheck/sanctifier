@@ -59,8 +59,11 @@ The rule works within one public `#[contractimpl]` function. It records local
 bindings whose initializer contains a `persistent().get(..)`,
 `persistent().try_get(..)`, `instance().get(..)`, or
 `instance().try_get(..)`, then looks for `for` loops over those bindings.
-A visible `.len()` check in an `if`/`while` condition or guard macro, or
-a `.take(..)` iterator bound, suppresses the advisory.
+A dominating runtime upper bound suppresses the advisory: an enclosing
+`if`/`while` condition that constrains `.len()`, an `assert!`/`assert_eq!`/
+`ensure!`/`require!` guard that constrains the length, or a `.take(..)`
+iterator bound. Incidental length checks, `!=` tests, and `debug_assert!`
+do not count as production bounds.
 
 **Limitations:** this is intentionally local and conservative. Bounds hidden in
 a helper function or enforced by a contract-wide invariant are not inferred.
