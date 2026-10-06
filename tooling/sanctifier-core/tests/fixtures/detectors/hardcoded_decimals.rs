@@ -20,6 +20,11 @@ impl PrecisionContract {
         balance / 10_000_000
     }
 
+    // Violation: `rate` is only a substring of `generate`, not a rate context.
+    pub fn generate_units(balance: i128) -> i128 {
+        balance / 10_000_000
+    }
+
     // Safe: derive the decimal count and scale from the asset at runtime.
     pub fn display_dynamic(asset: TokenClient, amount: i128) -> i128 {
         let decimals = asset.decimals();

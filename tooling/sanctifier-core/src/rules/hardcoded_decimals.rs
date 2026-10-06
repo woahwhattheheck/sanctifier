@@ -287,21 +287,23 @@ fn is_conversion_context(name: &str) -> bool {
 }
 
 fn is_rate_context(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [
-        "bps",
-        "basis",
-        "rate",
-        "fee",
-        "interest",
-        "percent",
-        "commission",
-        "royalty",
-        "tax",
-        "ratio",
-    ]
-    .iter()
-    .any(|keyword| lower.contains(keyword))
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .any(|part| {
+            matches!(
+                part.to_ascii_lowercase().as_str(),
+                "bps"
+                    | "basis"
+                    | "rate"
+                    | "fee"
+                    | "interest"
+                    | "percent"
+                    | "commission"
+                    | "royalty"
+                    | "tax"
+                    | "ratio"
+            )
+        })
 }
 
 fn contains_token_quantity_identifier(expr: &syn::Expr) -> bool {
