@@ -155,46 +155,56 @@ impl LedgerSizeRule {
     }
 
     fn estimate_struct_size(&self, s: &syn::ItemStruct) -> usize {
-        let mut total = 0;
         match &s.fields {
-            Fields::Named(fields) => {
-                for f in &fields.named {
-                    total += self.estimate_type_size(&f.ty);
-                }
-            }
-            Fields::Unnamed(fields) => {
-                for f in &fields.unnamed {
-                    total += self.estimate_type_size(&f.ty);
-                }
-            }
-            Fields::Unit => {}
+            // Named #[contracttype] structs are encoded as ScVal::Map. Each
+            // field therefore pays for the map framing plus a Symbol key and
+            // the field value itself.
+            Fields::Named(fields) => fields.named.iter().fold(
+                SCVAL_CONTAINER_OVERHEAD_BYTES,
+                |total, field| {
+                    let key = field
+                        .ident
+                        .as_ref()
+                        .map(|ident| estimate_symbol_size(&ident.to_string()))
+                        .unwrap_or(0);
+                    total
+                        .saturating_add(key)
+                        .saturating_add(self.estimate_type_size(&field.ty))
+                },
+            ),
+            // Tuple structs are encoded as ScVal::Vec.
+            Fields::Unnamed(fields) => fields.unnamed.iter().fold(
+                SCVAL_CONTAINER_OVERHEAD_BYTES,
+                |total, field| total.saturating_add(self.estimate_type_size(&field.ty)),
+            ),
+            Fields::Unit => SCVAL_CONTAINER_OVERHEAD_BYTES,
         }
-        total
     }
 
     fn estimate_enum_size(&self, e: &syn::ItemEnum) -> usize {
-        // Contract enums are serialized as tagged ScVals; budget one XDR
-        // discriminant plus the scalar tag rather than a bare Rust discriminant.
-        const DISCRIMINANT_SIZE: usize = 8;
+        // #[contracttype] enums are ScVal::Vec values whose first element is
+        // the variant-name Symbol, followed by any tuple payload.
         let mut max_variant = 0usize;
-        for v in &e.variants {
-            let mut variant_size = 0;
-            match &v.fields {
+        for variant in &e.variants {
+            let mut variant_size = estimate_symbol_size(&variant.ident.to_string());
+            match &variant.fields {
                 syn::Fields::Named(fields) => {
-                    for f in &fields.named {
-                        variant_size += self.estimate_type_size(&f.ty);
+                    for field in &fields.named {
+                        variant_size = variant_size
+                            .saturating_add(self.estimate_type_size(&field.ty));
                     }
                 }
                 syn::Fields::Unnamed(fields) => {
-                    for f in &fields.unnamed {
-                        variant_size += self.estimate_type_size(&f.ty);
+                    for field in &fields.unnamed {
+                        variant_size = variant_size
+                            .saturating_add(self.estimate_type_size(&field.ty));
                     }
                 }
                 syn::Fields::Unit => {}
             }
             max_variant = max_variant.max(variant_size);
         }
-        DISCRIMINANT_SIZE + max_variant
+        SCVAL_CONTAINER_OVERHEAD_BYTES.saturating_add(max_variant)
     }
 
     // These are XDR-shaped payload estimates, not Rust in-memory sizes. Fixed
@@ -311,6 +321,10 @@ fn round_up_xdr_word(bytes: usize) -> usize {
     bytes.saturating_add(XDR_WORD_BYTES - 1) / XDR_WORD_BYTES * XDR_WORD_BYTES
 }
 
+fn estimate_symbol_size(symbol: &str) -> usize {
+    SCVAL_VARLEN_OVERHEAD_BYTES.saturating_add(round_up_xdr_word(symbol.len()))
+}
+
 fn has_contracttype(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         if let Meta::Path(path) = &attr.meta {
@@ -339,6 +353,36 @@ mod tests {
         assert_eq!(rule.estimate_type_size(&address_ty), 44);
         assert_eq!(rule.estimate_type_size(&bytes_n_ty), 40);
         assert_eq!(rule.estimate_type_size(&array_ty), 32_780);
+    }
+
+    #[test]
+    fn contracttype_container_and_symbol_overhead_is_included() {
+        let rule = LedgerSizeRule::new();
+        let named: syn::ItemStruct = syn::parse_quote! {
+            #[contracttype]
+            pub struct State {
+                pub a: u32,
+                pub long_name: u32,
+            }
+        };
+        let tuple: syn::ItemStruct = syn::parse_quote! {
+            #[contracttype]
+            pub struct Pair(pub u32, pub u64);
+        };
+        let enum_ty: syn::ItemEnum = syn::parse_quote! {
+            #[contracttype]
+            pub enum Status {
+                Ready,
+                Failed(u32),
+            }
+        };
+
+        // Map framing + (Symbol("a") + u32) + (Symbol("long_name") + u32).
+        assert_eq!(rule.estimate_struct_size(&named), 60);
+        // Vec framing + u32 + u64.
+        assert_eq!(rule.estimate_struct_size(&tuple), 32);
+        // Vec framing + largest variant: Symbol("Failed") + u32.
+        assert_eq!(rule.estimate_enum_size(&enum_ty), 36);
     }
 
     #[test]
