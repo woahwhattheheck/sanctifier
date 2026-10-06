@@ -181,7 +181,7 @@ fn stmt_is_nonnegative_guard(stmt: &syn::Stmt, target: &str) -> bool {
                 .last()
                 .map(|segment| segment.ident.to_string())
                 .unwrap_or_default();
-            matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure")
+            matches!(name.as_str(), "assert" | "require" | "ensure")
                 && macro_proves_nonnegative(&stmt_macro.mac, target)
         }
         syn::Stmt::Expr(expr, _) => expr_is_nonnegative_guard(expr, target),
@@ -199,7 +199,7 @@ fn expr_is_nonnegative_guard(expr: &syn::Expr, target: &str) -> bool {
                 .last()
                 .map(|segment| segment.ident.to_string())
                 .unwrap_or_default();
-            matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure")
+            matches!(name.as_str(), "assert" | "require" | "ensure")
                 && macro_proves_nonnegative(&expr_macro.mac, target)
         }
         syn::Expr::If(expr_if) => {
@@ -420,6 +420,20 @@ mod tests {
         assert!(SignedNonnegativeQuantityRule::new()
             .check(source)
             .is_empty());
+    }
+
+    #[test]
+    fn debug_assert_does_not_count_as_a_nonnegative_guard() {
+        let source = r#"
+            fn withdraw(amount: i128) {
+                debug_assert!(amount >= 0);
+                consume(amount);
+            }
+        "#;
+
+        let findings = SignedNonnegativeQuantityRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].message.contains("amount"));
     }
 
     #[test]
