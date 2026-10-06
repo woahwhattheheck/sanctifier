@@ -1,6 +1,16 @@
 use crate::rules::{Rule, RuleViolation, Severity};
 use syn::{Fields, Item, Meta, Type};
 
+const DEFAULT_LEDGER_LIMIT_BYTES: usize = 64_000;
+const DEFAULT_APPROACHING_THRESHOLD: f64 = 0.80;
+const SERIALIZATION_MARGIN_PERCENT: usize = 10;
+const SCVAL_TAG_BYTES: usize = 4;
+const XDR_WORD_BYTES: usize = 4;
+const SCVAL_VARLEN_OVERHEAD_BYTES: usize = SCVAL_TAG_BYTES + XDR_WORD_BYTES;
+const SCVAL_CONTAINER_OVERHEAD_BYTES: usize = SCVAL_TAG_BYTES + XDR_WORD_BYTES * 2;
+const DYNAMIC_PROXY_PAYLOAD_BYTES: usize = 64;
+const UNKNOWN_UDT_ESTIMATE_BYTES: usize = 40;
+
 pub struct LedgerSizeRule {
     ledger_limit: usize,
     approaching_threshold: f64,
@@ -10,8 +20,8 @@ pub struct LedgerSizeRule {
 impl LedgerSizeRule {
     pub fn new() -> Self {
         Self {
-            ledger_limit: 64000,
-            approaching_threshold: 0.8,
+            ledger_limit: DEFAULT_LEDGER_LIMIT_BYTES,
+            approaching_threshold: DEFAULT_APPROACHING_THRESHOLD,
             strict_mode: false,
         }
     }
@@ -73,16 +83,18 @@ impl Rule for LedgerSizeRule {
                             SizeWarningLevel::ExceedsLimit => Severity::Error,
                             SizeWarningLevel::ApproachingLimit => Severity::Warning,
                         };
+                        let budgeted = self.size_with_margin(size);
+                        let remaining = self.ledger_limit.saturating_sub(budgeted);
                         violations.push(RuleViolation::new(
                             self.name(),
                             severity,
                             format!(
-                                "Struct '{}' estimated size {} bytes exceeds or approaches limit",
-                                s.ident, size
+                                "Struct '{}' estimated XDR size {} bytes ({}% safety budget: {} bytes) exceeds or approaches limit",
+                                s.ident, size, SERIALIZATION_MARGIN_PERCENT, budgeted
                             ),
                             format!(
-                                "{}:estimated {} bytes, limit {} bytes",
-                                s.ident, size, self.ledger_limit
+                                "{}:estimated {} bytes, budgeted {} bytes, remaining {} bytes, limit {} bytes",
+                                s.ident, size, budgeted, remaining, self.ledger_limit
                             ),
                         ));
                     }
@@ -94,16 +106,18 @@ impl Rule for LedgerSizeRule {
                             SizeWarningLevel::ExceedsLimit => Severity::Error,
                             SizeWarningLevel::ApproachingLimit => Severity::Warning,
                         };
+                        let budgeted = self.size_with_margin(size);
+                        let remaining = self.ledger_limit.saturating_sub(budgeted);
                         violations.push(RuleViolation::new(
                             self.name(),
                             severity,
                             format!(
-                                "Enum '{}' estimated size {} bytes exceeds or approaches limit",
-                                e.ident, size
+                                "Enum '{}' estimated XDR size {} bytes ({}% safety budget: {} bytes) exceeds or approaches limit",
+                                e.ident, size, SERIALIZATION_MARGIN_PERCENT, budgeted
                             ),
                             format!(
-                                "{}:estimated {} bytes, limit {} bytes",
-                                e.ident, size, self.ledger_limit
+                                "{}:estimated {} bytes, budgeted {} bytes, remaining {} bytes, limit {} bytes",
+                                e.ident, size, budgeted, remaining, self.ledger_limit
                             ),
                         ));
                     }
@@ -122,13 +136,22 @@ impl Rule for LedgerSizeRule {
 
 impl LedgerSizeRule {
     fn classify_size(&self, size: usize, strict_threshold: usize) -> Option<SizeWarningLevel> {
-        if size >= self.ledger_limit || (self.strict_mode && size >= strict_threshold) {
+        let budgeted = self.size_with_margin(size);
+        if budgeted >= self.ledger_limit || (self.strict_mode && budgeted >= strict_threshold) {
             Some(SizeWarningLevel::ExceedsLimit)
-        } else if size as f64 >= self.ledger_limit as f64 * self.approaching_threshold {
+        } else if budgeted as f64 >= self.ledger_limit as f64 * self.approaching_threshold {
             Some(SizeWarningLevel::ApproachingLimit)
         } else {
             None
         }
+    }
+
+    fn size_with_margin(&self, size: usize) -> usize {
+        let margin = size
+            .saturating_mul(SERIALIZATION_MARGIN_PERCENT)
+            .saturating_add(99)
+            / 100;
+        size.saturating_add(margin)
     }
 
     fn estimate_struct_size(&self, s: &syn::ItemStruct) -> usize {
@@ -150,7 +173,9 @@ impl LedgerSizeRule {
     }
 
     fn estimate_enum_size(&self, e: &syn::ItemEnum) -> usize {
-        const DISCRIMINANT_SIZE: usize = 4;
+        // Contract enums are serialized as tagged ScVals; budget one XDR
+        // discriminant plus the scalar tag rather than a bare Rust discriminant.
+        const DISCRIMINANT_SIZE: usize = 8;
         let mut max_variant = 0usize;
         for v in &e.variants {
             let mut variant_size = 0;
@@ -172,74 +197,114 @@ impl LedgerSizeRule {
         DISCRIMINANT_SIZE + max_variant
     }
 
-    // `&self` is not read here, only threaded through the recursive calls; kept
-    // as a method for call-site symmetry with the rest of the visitor.
+    // These are XDR-shaped payload estimates, not Rust in-memory sizes. Fixed
+    // width values include the ScVal discriminant. Dynamic containers use one
+    // representative element/payload and are intentionally documented as
+    // lower-confidence growth floors.
     #[allow(clippy::only_used_in_recursion)]
     fn estimate_type_size(&self, ty: &Type) -> usize {
         match ty {
             Type::Path(tp) => {
                 if let Some(seg) = tp.path.segments.last() {
-                    let base = match seg.ident.to_string().as_str() {
-                        "u32" | "i32" | "bool" => 4,
-                        "u64" | "i64" => 8,
-                        "u128" | "i128" | "I128" | "U128" => 16,
-                        "Address" => 32,
-                        "Bytes" | "BytesN" | "String" | "Symbol" => 64,
+                    match seg.ident.to_string().as_str() {
+                        // Soroban XDR has no u8/u16 scalar variants; SDK values
+                        // widen these to a 32-bit ScVal representation.
+                        "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "bool" => 8,
+                        "u64" | "i64" => 12,
+                        "u128" | "i128" | "I128" | "U128" => 20,
+                        "u256" | "i256" | "I256" | "U256" => 36,
+                        // Account addresses are slightly larger than contract
+                        // addresses in XDR; use the larger representation.
+                        "Address" => 44,
+                        "BytesN" => {
+                            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                                if let Some(n) = args.args.iter().find_map(|arg| {
+                                    if let syn::GenericArgument::Const(syn::Expr::Lit(expr)) = arg {
+                                        if let syn::Lit::Int(lit) = &expr.lit {
+                                            return lit.base10_parse::<usize>().ok();
+                                        }
+                                    }
+                                    None
+                                }) {
+                                    return SCVAL_VARLEN_OVERHEAD_BYTES
+                                        .saturating_add(round_up_xdr_word(n));
+                                }
+                            }
+                            SCVAL_VARLEN_OVERHEAD_BYTES + DYNAMIC_PROXY_PAYLOAD_BYTES
+                        }
+                        "Bytes" | "String" | "Symbol" => {
+                            SCVAL_VARLEN_OVERHEAD_BYTES + DYNAMIC_PROXY_PAYLOAD_BYTES
+                        }
                         "Vec" => {
                             if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                                 if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                                    return 8 + self.estimate_type_size(inner);
+                                    return SCVAL_CONTAINER_OVERHEAD_BYTES
+                                        .saturating_add(self.estimate_type_size(inner));
                                 }
                             }
-                            128
+                            SCVAL_CONTAINER_OVERHEAD_BYTES + DYNAMIC_PROXY_PAYLOAD_BYTES
                         }
                         "Map" => {
                             if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                                let inner: usize = args
+                                let one_entry: usize = args
                                     .args
                                     .iter()
-                                    .filter_map(|a| {
-                                        if let syn::GenericArgument::Type(t) = a {
-                                            Some(self.estimate_type_size(t))
+                                    .filter_map(|arg| {
+                                        if let syn::GenericArgument::Type(inner) = arg {
+                                            Some(self.estimate_type_size(inner))
                                         } else {
                                             None
                                         }
                                     })
                                     .sum();
-                                if inner > 0 {
-                                    return 16 + inner * 2;
+                                if one_entry > 0 {
+                                    return SCVAL_CONTAINER_OVERHEAD_BYTES
+                                        .saturating_add(one_entry);
                                 }
                             }
-                            128
+                            SCVAL_CONTAINER_OVERHEAD_BYTES + DYNAMIC_PROXY_PAYLOAD_BYTES
                         }
                         "Option" => {
                             if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                                 if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                                    return 1 + self.estimate_type_size(inner);
+                                    return SCVAL_TAG_BYTES
+                                        .saturating_add(self.estimate_type_size(inner));
                                 }
                             }
-                            32
+                            SCVAL_TAG_BYTES + UNKNOWN_UDT_ESTIMATE_BYTES
                         }
-                        _ => 32,
-                    };
-                    base
+                        _ => UNKNOWN_UDT_ESTIMATE_BYTES,
+                    }
                 } else {
-                    8
+                    UNKNOWN_UDT_ESTIMATE_BYTES
                 }
             }
             Type::Array(arr) => {
                 if let syn::Expr::Lit(expr_lit) = &arr.len {
                     if let syn::Lit::Int(lit) = &expr_lit.lit {
                         if let Ok(n) = lit.base10_parse::<usize>() {
-                            return n * self.estimate_type_size(&arr.elem);
+                            return SCVAL_CONTAINER_OVERHEAD_BYTES.saturating_add(
+                                n.saturating_mul(self.estimate_type_size(&arr.elem)),
+                            );
                         }
                     }
                 }
-                64
+                SCVAL_CONTAINER_OVERHEAD_BYTES + DYNAMIC_PROXY_PAYLOAD_BYTES
             }
-            _ => 8,
+            Type::Tuple(tuple) => SCVAL_CONTAINER_OVERHEAD_BYTES.saturating_add(
+                tuple
+                    .elems
+                    .iter()
+                    .map(|elem| self.estimate_type_size(elem))
+                    .sum::<usize>(),
+            ),
+            Type::Reference(reference) => self.estimate_type_size(&reference.elem),
+            Type::Paren(paren) => self.estimate_type_size(&paren.elem),
+            Type::Group(group) => self.estimate_type_size(&group.elem),
+            _ => UNKNOWN_UDT_ESTIMATE_BYTES,
         }
     }
+
 }
 
 fn has_contracttype(attrs: &[syn::Attribute]) -> bool {
@@ -250,4 +315,59 @@ fn has_contracttype(attrs: &[syn::Attribute]) -> bool {
             false
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_width_estimates_follow_xdr_shape() {
+        let rule = LedgerSizeRule::new();
+        let u8_ty: Type = syn::parse_quote!(u8);
+        let u64_ty: Type = syn::parse_quote!(u64);
+        let address_ty: Type = syn::parse_quote!(Address);
+        let bytes_n_ty: Type = syn::parse_quote!(BytesN<32>);
+        let array_ty: Type = syn::parse_quote!([u8; 4096]);
+
+        assert_eq!(rule.estimate_type_size(&u8_ty), 8);
+        assert_eq!(rule.estimate_type_size(&u64_ty), 12);
+        assert_eq!(rule.estimate_type_size(&address_ty), 44);
+        assert_eq!(rule.estimate_type_size(&bytes_n_ty), 40);
+        assert_eq!(rule.estimate_type_size(&array_ty), 32_780);
+    }
+
+    #[test]
+    fn serialization_margin_is_one_sided_and_rounded_up() {
+        let rule = LedgerSizeRule::new();
+        assert_eq!(rule.size_with_margin(51_256), 56_382);
+        assert_eq!(rule.size_with_margin(64_056), 70_462);
+    }
+
+    #[test]
+    fn reports_near_cap_warning_and_over_cap_error_with_per_struct_budget() {
+        let source = r#"
+            use soroban_sdk::{contracttype, Address};
+
+            #[contracttype]
+            pub struct NearCapState {
+                pub admin: Address,
+                pub blob: [u8; 6400],
+            }
+
+            #[contracttype]
+            pub struct OversizedState {
+                pub admin: Address,
+                pub blob: [u8; 8000],
+            }
+        "#;
+
+        let findings = LedgerSizeRule::new().check(source);
+        assert_eq!(findings.len(), 2, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Warning);
+        assert_eq!(findings[1].severity, Severity::Error);
+        assert!(findings[0].message.contains("10% safety budget"));
+        assert!(findings[0].location.contains("remaining 7618 bytes"));
+        assert!(findings[1].location.contains("remaining 0 bytes"));
+    }
 }
