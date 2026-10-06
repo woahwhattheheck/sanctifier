@@ -113,6 +113,16 @@ impl SeverityCounts {
             "A"
         }
     }
+
+    fn badge_color(self) -> &'static str {
+        if self.critical > 0 {
+            SecurityStatus::Critical.color()
+        } else if self.high + self.medium + self.low > 0 {
+            SecurityStatus::Warning.color()
+        } else {
+            SecurityStatus::Secure.color()
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -272,7 +282,7 @@ fn badge_presentation(report: &AnalyzeReport, variant: &str) -> anyhow::Result<B
                     "C:{} H:{} M:{} L:{}",
                     counts.critical, counts.high, counts.medium, counts.low
                 ),
-                color: status.color(),
+                color: counts.badge_color(),
             })
         }
         "grade" => {
@@ -280,7 +290,7 @@ fn badge_presentation(report: &AnalyzeReport, variant: &str) -> anyhow::Result<B
             Ok(BadgePresentation {
                 label: "Sanctifier grade",
                 value: counts.grade().to_string(),
-                color: status.color(),
+                color: counts.badge_color(),
             })
         }
         "trend" => Ok(BadgePresentation {
@@ -457,7 +467,9 @@ mod tests {
         let counts = severity_counts(&report);
         assert_eq!(counts.critical, 1);
         assert_eq!(counts.medium, 0);
-        assert_eq!(badge_presentation(&report, "grade").unwrap().value, "F");
+        let grade = badge_presentation(&report, "grade").unwrap();
+        assert_eq!(grade.value, "F");
+        assert_eq!(grade.color, SecurityStatus::Critical.color());
     }
 
     #[test]
