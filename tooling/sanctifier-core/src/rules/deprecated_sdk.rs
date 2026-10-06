@@ -13,7 +13,6 @@ enum ApiShape {
         accessor: &'static str,
         method: &'static str,
     },
-    DeployerAddressMethod(&'static str),
     AssociatedFn {
         ty: &'static str,
         function: &'static str,
@@ -28,9 +27,9 @@ struct DeprecatedApi {
     shape: ApiShape,
 }
 
-// Maintained from the public #[deprecated] annotations in soroban-sdk.
-// Generic names such as publish and deploy are matched only when their
-// receiver has a syntax-distinctive Soroban accessor chain rooted at env.
+// Maintained against the workspace soroban-sdk baseline (20.5.0) using that
+// release's public #[deprecated] annotations. When the workspace SDK advances,
+// refresh this table against the new supported tag.
 const DEPRECATED_APIS: &[DeprecatedApi] = &[
     DeprecatedApi {
         display: "Env::logger()",
@@ -44,40 +43,6 @@ const DEPRECATED_APIS: &[DeprecatedApi] = &[
             accessor: "logs",
             method: "log",
         },
-    },
-    DeprecatedApi {
-        display: "Events::publish(..)",
-        replacement: "#[contractevent] plus Events::publish_event(..)",
-        shape: ApiShape::EnvAccessorMethod {
-            accessor: "events",
-            method: "publish",
-        },
-    },
-    DeprecatedApi {
-        display: "Ledger::protocol_version()",
-        replacement: "remove protocol-version branching; the SDK no longer guarantees this value",
-        shape: ApiShape::EnvAccessorMethod {
-            accessor: "ledger",
-            method: "protocol_version",
-        },
-    },
-    DeprecatedApi {
-        display: "Deployer::update_current_contract_wasm(..)",
-        replacement: "Deployer::update_current_contract(..)",
-        shape: ApiShape::EnvAccessorMethod {
-            accessor: "deployer",
-            method: "update_current_contract_wasm",
-        },
-    },
-    DeprecatedApi {
-        display: "DeployerWithAddress::deploy(..)",
-        replacement: "DeployerWithAddress::deploy_contract(..)",
-        shape: ApiShape::DeployerAddressMethod("deploy"),
-    },
-    DeprecatedApi {
-        display: "Env::register_contract(..)",
-        replacement: "Env::register(..)",
-        shape: ApiShape::EnvMethod("register_contract"),
     },
     DeprecatedApi {
         display: "Prng::u64_in_range(..)",
@@ -107,11 +72,6 @@ const DEPRECATED_APIS: &[DeprecatedApi] = &[
         display: "panic_error!(..)",
         replacement: "panic_with_error!(..)",
         shape: ApiShape::Macro("panic_error"),
-    },
-    DeprecatedApi {
-        display: "assert_in_contract!(..)",
-        replacement: "debug_assert_in_contract!(..) for debug-only assertions",
-        shape: ApiShape::Macro("assert_in_contract"),
     },
 ];
 
@@ -205,9 +165,6 @@ impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
                 ApiShape::EnvAccessorMethod { accessor, method } => {
                     node.method == method && receiver_is_env_accessor(&node.receiver, accessor)
                 }
-                ApiShape::DeployerAddressMethod(method) => {
-                    node.method == method && receiver_is_deployer_address(&node.receiver)
-                }
                 ApiShape::AssociatedFn { .. } | ApiShape::Macro(_) => false,
             };
             if matched {
@@ -262,19 +219,6 @@ fn receiver_is_env_accessor(expr: &syn::Expr, accessor: &str) -> bool {
             call.method == accessor && call.args.is_empty() && receiver_is_env(&call.receiver)
         }
         syn::Expr::Paren(p) => receiver_is_env_accessor(&p.expr, accessor),
-        _ => false,
-    }
-}
-
-fn receiver_is_deployer_address(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::MethodCall(call)
-            if (call.method == "with_current_contract" || call.method == "with_address")
-                && receiver_is_env_accessor(&call.receiver, "deployer") =>
-        {
-            true
-        }
-        syn::Expr::Paren(p) => receiver_is_deployer_address(&p.expr),
         _ => false,
     }
 }
