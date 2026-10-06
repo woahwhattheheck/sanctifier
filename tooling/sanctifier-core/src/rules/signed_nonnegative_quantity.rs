@@ -263,33 +263,32 @@ fn zero_literal(expr: &syn::Expr) -> bool {
 }
 
 fn block_terminates(block: &syn::Block) -> bool {
-    let mut visitor = RejectVisitor { rejects: false };
-    visitor.visit_block(block);
-    visitor.rejects
+    block.stmts.iter().any(stmt_terminates)
 }
 
-struct RejectVisitor {
-    rejects: bool,
+fn stmt_terminates(stmt: &syn::Stmt) -> bool {
+    match stmt {
+        syn::Stmt::Expr(expr, _) => expr_terminates(expr),
+        syn::Stmt::Macro(stmt_macro) => macro_terminates(&stmt_macro.mac),
+        _ => false,
+    }
 }
 
-impl<'ast> Visit<'ast> for RejectVisitor {
-    fn visit_expr_return(&mut self, _node: &'ast syn::ExprReturn) {
-        self.rejects = true;
+fn expr_terminates(expr: &syn::Expr) -> bool {
+    match unwrap_parens(expr) {
+        syn::Expr::Return(_) => true,
+        syn::Expr::Macro(expr_macro) => macro_terminates(&expr_macro.mac),
+        syn::Expr::Block(expr_block) => block_terminates(&expr_block.block),
+        _ => false,
     }
+}
 
-    fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        let name = node
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string())
-            .unwrap_or_default();
-        if matches!(name.as_str(), "panic" | "panic_with_error" | "bail") {
-            self.rejects = true;
-            return;
-        }
-        syn::visit::visit_macro(self, node);
-    }
+fn macro_terminates(mac: &syn::Macro) -> bool {
+    mac.path
+        .segments
+        .last()
+        .map(|segment| matches!(segment.ident.to_string().as_str(), "panic" | "panic_with_error" | "bail"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -335,6 +334,24 @@ mod tests {
         assert!(SignedNonnegativeQuantityRule::new()
             .check(source)
             .is_empty());
+    }
+
+    #[test]
+    fn nested_conditional_return_does_not_count_as_a_nonnegative_guard() {
+        let source = r#"
+            fn withdraw(amount: i128, reject_negative: bool) {
+                if amount < 0 {
+                    if reject_negative {
+                        return;
+                    }
+                }
+                consume(amount);
+            }
+        "#;
+
+        let findings = SignedNonnegativeQuantityRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].message.contains("amount"));
     }
 
     #[test]
