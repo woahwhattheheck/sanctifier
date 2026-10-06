@@ -345,19 +345,25 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
 
     // ── Inline suppression ───────────────────────────────────────────────────
     let suppression_audit = collect_inline_suppression_audit(path, &analyzer.config);
-    let mut inline_suppressions: std::collections::HashMap<
+    let mut suppression_audit_by_file: std::collections::HashMap<
         String,
-        Vec<(usize, String, String)>,
+        Vec<InlineSuppressionAuditEntry>,
     > = std::collections::HashMap::new();
 
     for entry in &suppression_audit {
-        if let Some(justification) = &entry.justification {
-            inline_suppressions
-                .entry(entry.file.clone())
-                .or_default()
-                .push((entry.line, entry.code.clone(), justification.clone()));
-        }
+        suppression_audit_by_file
+            .entry(entry.file.clone())
+            .or_default()
+            .push(entry.clone());
     }
+
+    let inline_suppressions: std::collections::HashMap<
+        String,
+        Vec<(usize, String, String)>,
+    > = suppression_audit_by_file
+        .into_iter()
+        .map(|(file, entries)| (file, active_inline_suppressions(&entries)))
+        .collect();
 
     if !is_json {
         for entry in suppression_audit
