@@ -1,4 +1,5 @@
 use crate::rules::{Rule, RuleViolation, Severity};
+use std::collections::HashSet;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -26,7 +27,11 @@ impl Rule for TtlExtendMisconfigRule {
             Some(file) => (*file).clone(),
             None => return vec![],
         };
-        let mut visitor = TtlVisitor { findings: Vec::new(), current_fn: None };
+        let mut visitor = TtlVisitor {
+            findings: Vec::new(),
+            current_fn: None,
+            env_bindings: HashSet::new(),
+        };
         visitor.visit_file(&file);
         visitor.findings
     }
@@ -37,24 +42,29 @@ impl Rule for TtlExtendMisconfigRule {
 struct TtlVisitor {
     findings: Vec<RuleViolation>,
     current_fn: Option<String>,
+    env_bindings: HashSet<String>,
 }
 
 impl<'ast> Visit<'ast> for TtlVisitor {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        let previous = self.current_fn.replace(node.sig.ident.to_string());
+        let previous_fn = self.current_fn.replace(node.sig.ident.to_string());
+        let previous_envs = std::mem::replace(&mut self.env_bindings, env_bindings(&node.sig));
         syn::visit::visit_item_fn(self, node);
-        self.current_fn = previous;
+        self.env_bindings = previous_envs;
+        self.current_fn = previous_fn;
     }
 
     fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        let previous = self.current_fn.replace(node.sig.ident.to_string());
+        let previous_fn = self.current_fn.replace(node.sig.ident.to_string());
+        let previous_envs = std::mem::replace(&mut self.env_bindings, env_bindings(&node.sig));
         syn::visit::visit_impl_item_fn(self, node);
-        self.current_fn = previous;
+        self.env_bindings = previous_envs;
+        self.current_fn = previous_fn;
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         if node.method == "extend_ttl" {
-            if let Some((kind, threshold, extend_to)) = ttl_args(node) {
+            if let Some((kind, threshold, extend_to)) = ttl_args(node, &self.env_bindings) {
                 if let (Some(threshold), Some(extend_to)) =
                     (const_u128(threshold), const_u128(extend_to))
                 {
@@ -82,8 +92,11 @@ impl<'ast> Visit<'ast> for TtlVisitor {
     }
 }
 
-fn ttl_args(call: &syn::ExprMethodCall) -> Option<(&'static str, &syn::Expr, &syn::Expr)> {
-    let kind = storage_kind(&call.receiver)?;
+fn ttl_args<'a>(
+    call: &'a syn::ExprMethodCall,
+    env_bindings: &HashSet<String>,
+) -> Option<(&'static str, &'a syn::Expr, &'a syn::Expr)> {
+    let kind = storage_kind(&call.receiver, env_bindings)?;
     let args: Vec<&syn::Expr> = call.args.iter().collect();
     match (kind, args.len()) {
         ("instance", 2) => Some((kind, args[0], args[1])),
@@ -92,7 +105,7 @@ fn ttl_args(call: &syn::ExprMethodCall) -> Option<(&'static str, &syn::Expr, &sy
     }
 }
 
-fn storage_kind(expr: &syn::Expr) -> Option<&'static str> {
+fn storage_kind(expr: &syn::Expr, env_bindings: &HashSet<String>) -> Option<&'static str> {
     let syn::Expr::MethodCall(call) = unwrap(expr) else { return None };
     let kind = match call.method.to_string().as_str() {
         "persistent" => "persistent",
@@ -100,13 +113,58 @@ fn storage_kind(expr: &syn::Expr) -> Option<&'static str> {
         "temporary" => "temporary",
         _ => return None,
     };
-    storage_root(&call.receiver).then_some(kind)
+    storage_root(&call.receiver, env_bindings).then_some(kind)
 }
 
-fn storage_root(expr: &syn::Expr) -> bool {
+fn storage_root(expr: &syn::Expr, env_bindings: &HashSet<String>) -> bool {
     match unwrap(expr) {
-        syn::Expr::MethodCall(call) if call.method == "storage" => true,
-        syn::Expr::MethodCall(call) => storage_root(&call.receiver),
+        syn::Expr::MethodCall(call) if call.method == "storage" && call.args.is_empty() => {
+            is_env_binding(&call.receiver, env_bindings)
+        }
+        syn::Expr::MethodCall(call) => storage_root(&call.receiver, env_bindings),
+        _ => false,
+    }
+}
+
+fn is_env_binding(expr: &syn::Expr, env_bindings: &HashSet<String>) -> bool {
+    match unwrap(expr) {
+        syn::Expr::Path(path) if path.path.segments.len() == 1 => {
+            env_bindings.contains(&path.path.segments[0].ident.to_string())
+        }
+        syn::Expr::Reference(reference) => is_env_binding(&reference.expr, env_bindings),
+        _ => false,
+    }
+}
+
+fn env_bindings(signature: &syn::Signature) -> HashSet<String> {
+    signature
+        .inputs
+        .iter()
+        .filter_map(|argument| {
+            let syn::FnArg::Typed(argument) = argument else {
+                return None;
+            };
+            if !type_is_env(&argument.ty) {
+                return None;
+            }
+            let syn::Pat::Ident(binding) = argument.pat.as_ref() else {
+                return None;
+            };
+            Some(binding.ident.to_string())
+        })
+        .collect()
+}
+
+fn type_is_env(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Env"),
+        syn::Type::Reference(reference) => type_is_env(&reference.elem),
+        syn::Type::Paren(paren) => type_is_env(&paren.elem),
+        syn::Type::Group(group) => type_is_env(&group.elem),
         _ => false,
     }
 }
@@ -143,5 +201,31 @@ fn const_u128(expr: &syn::Expr) -> Option<u128> {
             }
         }
         _ => None,
+    }
+}
+
+
+#[cfg(test)]
+mod receiver_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_renamed_env_binding() {
+        let source = r#"
+            fn renew(ctx: Env) {
+                ctx.storage().instance().extend_ttl(200, 100);
+            }
+        "#;
+        assert_eq!(TtlExtendMisconfigRule::new().check(source).len(), 1);
+    }
+
+    #[test]
+    fn ignores_unrelated_storage_api() {
+        let source = r#"
+            fn renew(cache: Cache) {
+                cache.storage().persistent().extend_ttl(&KEY, 200, 100);
+            }
+        "#;
+        assert!(TtlExtendMisconfigRule::new().check(source).is_empty());
     }
 }
