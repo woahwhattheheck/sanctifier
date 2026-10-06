@@ -206,6 +206,37 @@ severity = "info"
 }
 
 #[test]
+fn test_analyze_typed_rule_info_override_is_reported() {
+    let temp_dir = tempdir().unwrap();
+    let contract = temp_dir.path().join("contract.rs");
+    fs::write(
+        &contract,
+        "fn add(left: u64, right: u64) -> u64 { left + right }\n",
+    )
+    .unwrap();
+
+    fs::write(
+        temp_dir.path().join(".sanctify.toml"),
+        "[rules.arithmetic_overflow]\nseverity = \"info\"\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("analyze")
+        .arg(&contract)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let findings = report["findings"]["arithmetic_issues"].as_array().unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0]["severity"], "Info");
+}
+
+#[test]
 fn test_analyze_empty_macro_heavy() {
     let mut cmd = Command::cargo_bin("sanctifier").unwrap();
     let fixture_path = env::current_dir()
