@@ -32,3 +32,8 @@ expression: findings
   message: "S014: deprecated soroban_sdk API 'panic_error!(..)' is still in use"
   location: "legacy:11"
   suggestion: "Use panic_with_error!(..) instead."
+- rule_name: S014
+  severity: Warning
+  message: "S014: deprecated soroban_sdk API 'Env::logger()' is still in use"
+  location: "renamed_ctx:15"
+  suggestion: "Use Env::logs() instead."
