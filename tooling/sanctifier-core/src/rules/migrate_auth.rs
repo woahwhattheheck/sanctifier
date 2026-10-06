@@ -1,5 +1,6 @@
 use crate::finding_codes::MIGRATE_AUTH;
 use crate::rules::{Rule, RuleViolation, Severity};
+use std::collections::BTreeSet;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -21,7 +22,11 @@ impl MigrateAuthRule {
             return Vec::new();
         }
 
-        let mut guard = AuthGuardVisitor { found: false };
+        let addresses = address_params(sig);
+        let mut guard = AuthGuardVisitor {
+            addresses: &addresses,
+            found: false,
+        };
         guard.visit_block(block);
         if guard.found { return Vec::new(); }
 
@@ -82,34 +87,83 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
     }
 }
 
-struct AuthGuardVisitor { found: bool }
+struct AuthGuardVisitor<'a> {
+    addresses: &'a BTreeSet<String>,
+    found: bool,
+}
 
-impl AuthGuardVisitor {
+impl AuthGuardVisitor<'_> {
     fn is_guard(name: &str) -> bool {
         matches!(name, "require_auth" | "require_auth_for_args")
     }
 }
 
-impl<'ast> Visit<'ast> for AuthGuardVisitor {
+impl<'ast> Visit<'ast> for AuthGuardVisitor<'_> {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if Self::is_guard(&node.method.to_string()) { self.found = true; }
+        if Self::is_guard(&node.method.to_string()) {
+            if let Some(name) = receiver_ident(&node.receiver) {
+                if self.addresses.contains(&name) {
+                    self.found = true;
+                }
+            }
+        }
         syn::visit::visit_expr_method_call(self, node);
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = &*node.func {
-            if path.path.segments.last().is_some_and(|segment| Self::is_guard(&segment.ident.to_string())) {
-                self.found = true;
+            let mut segments = path.path.segments.iter().rev();
+            let method = segments.next().map(|segment| segment.ident.to_string());
+            let receiver_type = segments.next().map(|segment| segment.ident.to_string());
+
+            if method.as_deref().is_some_and(Self::is_guard)
+                && receiver_type.as_deref() == Some("Address")
+            {
+                if let Some(first_arg) = node.args.first() {
+                    if let Some(name) = receiver_ident(first_arg) {
+                        if self.addresses.contains(&name) {
+                            self.found = true;
+                        }
+                    }
+                }
             }
         }
         syn::visit::visit_expr_call(self, node);
     }
+}
 
-    fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        if node.path.segments.last().is_some_and(|segment| Self::is_guard(&segment.ident.to_string())) {
-            self.found = true;
+fn address_params(sig: &syn::Signature) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for input in &sig.inputs {
+        if let syn::FnArg::Typed(pat_type) = input {
+            if let syn::Pat::Ident(ident) = &*pat_type.pat {
+                if type_mentions_address(&pat_type.ty) {
+                    out.insert(ident.ident.to_string());
+                }
+            }
         }
-        syn::visit::visit_macro(self, node);
+    }
+    out
+}
+
+fn type_mentions_address(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Address"),
+        syn::Type::Reference(reference) => type_mentions_address(&reference.elem),
+        _ => false,
+    }
+}
+
+fn receiver_ident(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Path(path) => path.path.get_ident().map(|ident| ident.to_string()),
+        syn::Expr::Reference(reference) => receiver_ident(&reference.expr),
+        syn::Expr::MethodCall(call) if call.method == "clone" => receiver_ident(&call.receiver),
+        _ => None,
     }
 }
 
@@ -138,7 +192,7 @@ impl Contract {
     }
 
     #[test]
-    fn accepts_method_path_and_macro_auth_guards() {
+    fn accepts_address_method_and_ufcs_auth_guards() {
         let source = r#"
 pub struct MethodGuard;
 impl MethodGuard { pub fn migrate(admin: Address) { admin.require_auth(); } }
@@ -148,11 +202,29 @@ impl ArgsGuard { pub fn migrate(admin: Address) { admin.require_auth_for_args((1
 
 pub struct PathGuard;
 impl PathGuard { pub fn migrate(admin: Address) { Address::require_auth(&admin); } }
+"#;
+        assert!(MigrateAuthRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn rejects_auth_looking_macro_and_non_address_receiver() {
+        let source = r#"
+macro_rules! require_auth { ($who:expr) => {}; }
 
 pub struct MacroGuard;
 impl MacroGuard { pub fn migrate(admin: Address) { require_auth!(admin); } }
+
+pub struct FakeAdmin;
+impl FakeAdmin { fn require_auth(&self) {} }
+
+pub struct FakeMethodGuard;
+impl FakeMethodGuard {
+    pub fn migrate(admin: FakeAdmin) {
+        admin.require_auth();
+    }
+}
 "#;
-        assert!(MigrateAuthRule::new().check(source).is_empty());
+        assert_eq!(MigrateAuthRule::new().check(source).len(), 2);
     }
 
     #[test]
