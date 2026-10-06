@@ -187,28 +187,17 @@ fn receiver_ident(expr: &syn::Expr) -> Option<String> {
 
 #[derive(Default)]
 struct MarkerVisitor {
-    has_admin: bool,
     has_nonce: bool,
 }
 
 impl<'ast> Visit<'ast> for MarkerVisitor {
     fn visit_ident(&mut self, node: &'ast proc_macro2::Ident) {
-        let value = node.to_string();
-        self.has_admin |= is_admin_marker(&value);
-        self.has_nonce |= is_nonce_marker(&value);
+        self.has_nonce |= is_nonce_marker(&node.to_string());
     }
 
     fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
-        let value = node.value();
-        self.has_admin |= is_admin_marker(&value);
-        self.has_nonce |= is_nonce_marker(&value);
+        self.has_nonce |= is_nonce_marker(&node.value());
     }
-}
-
-fn expr_has_admin_marker(expr: &syn::Expr) -> bool {
-    let mut marker = MarkerVisitor::default();
-    marker.visit_expr(expr);
-    marker.has_admin
 }
 
 fn expr_has_nonce_marker(expr: &syn::Expr) -> bool {
