@@ -1,0 +1,51 @@
+# Reusable Azure DevOps steps for Sanctifier.
+# Delay the scan exit code until after the SARIF artifact is published.
+
+parameters:
+  - name: scanPath
+    type: string
+    default: "."
+  - name: artifactName
+    type: string
+    default: "sanctifier-sarif"
+
+steps:
+  - bash: |
+      set -euo pipefail
+      cargo install --locked --git https://github.com/Centurylong/sanctifier sanctifier-cli
+    displayName: Install Sanctifier
+
+  - bash: |
+      set +e
+      report_dir="$(Agent.TempDirectory)/sanctifier"
+      report_path="$report_dir/sanctifier.sarif"
+      mkdir -p "$report_dir"
+
+      sanctifier ci "${{ parameters.scanPath }}" --format sarif > "$report_path"
+      status=$?
+
+      echo "##vso[task.setvariable variable=SANCTIFIER_EXIT_CODE]$status"
+      if [ ! -s "$report_path" ]; then
+        echo "Sanctifier did not produce a SARIF report" >&2
+        exit 2
+      fi
+      exit 0
+    displayName: Run Sanctifier and write SARIF
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publish Sanctifier SARIF
+    condition: always()
+    inputs:
+      targetPath: "$(Agent.TempDirectory)/sanctifier/sanctifier.sarif"
+      artifact: "${{ parameters.artifactName }}"
+      publishLocation: "pipeline"
+
+  - bash: |
+      status="$(SANCTIFIER_EXIT_CODE)"
+      if [ -z "$status" ]; then
+        echo "Sanctifier exit code was not captured" >&2
+        exit 2
+      fi
+      exit "$status"
+    displayName: Enforce Sanctifier gate
+    condition: always()
