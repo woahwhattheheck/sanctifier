@@ -177,12 +177,35 @@ fn unwrap(expr: &syn::Expr) -> &syn::Expr {
     }
 }
 
+fn unsigned_primitive_cast(value: u128, ty: &syn::Type) -> Option<u128> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some()
+        || path.path.leading_colon.is_some()
+        || path.path.segments.len() != 1
+    {
+        return None;
+    }
+
+    match path.path.segments[0].ident.to_string().as_str() {
+        "u8" => Some(value & u128::from(u8::MAX)),
+        "u16" => Some(value & u128::from(u16::MAX)),
+        "u32" => Some(value & u128::from(u32::MAX)),
+        "u64" => Some(value & u128::from(u64::MAX)),
+        "u128" => Some(value),
+        // usize is target-width dependent; signed, float, and user-defined casts
+        // are intentionally left dynamic rather than guessed.
+        _ => None,
+    }
+}
+
 fn const_u128(expr: &syn::Expr) -> Option<u128> {
     match unwrap(expr) {
         syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(n), .. }) => {
             n.base10_parse::<u128>().ok()
         }
-        syn::Expr::Cast(c) => const_u128(&c.expr),
+        syn::Expr::Cast(c) => unsigned_primitive_cast(const_u128(&c.expr)?, &c.ty),
         syn::Expr::Binary(b) => {
             let left = const_u128(&b.left)?;
             let right = const_u128(&b.right)?;
