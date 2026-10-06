@@ -1,5 +1,6 @@
 use crate::rules::{Rule, RuleViolation, Severity};
 use std::collections::HashSet;
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::Attribute;
@@ -76,13 +77,13 @@ fn check_function(fn_name: &str, block: &syn::Block) -> Vec<RuleViolation> {
 
     let mut visitor = IterationVisitor {
         storage_collections: &loads.collections,
-        capped_collections: HashSet::new(),
+        active_caps: HashSet::new(),
         iterations: Vec::new(),
     };
     visitor.visit_block(block);
 
     visitor.iterations.into_iter()
-        .filter(|item| !item.iterator_bounded && !visitor.capped_collections.contains(&item.collection))
+        .filter(|item| !item.iterator_bounded && !item.context_bounded)
         .map(|item| {
             RuleViolation::new(
                 FINDING_CODE,
@@ -115,31 +116,55 @@ impl<'ast> Visit<'ast> for StorageLoadVisitor {
 
 struct IterationVisitor<'a> {
     storage_collections: &'a HashSet<String>,
-    capped_collections: HashSet<String>,
+    active_caps: HashSet<String>,
     iterations: Vec<StorageIteration>,
 }
 
 #[derive(Clone)]
-struct StorageIteration { collection: String, line: usize, iterator_bounded: bool }
+struct StorageIteration {
+    collection: String,
+    line: usize,
+    iterator_bounded: bool,
+    context_bounded: bool,
+}
 
 impl<'ast> Visit<'ast> for IterationVisitor<'_> {
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        let saved = self.active_caps.clone();
+        syn::visit::visit_block(self, node);
+        self.active_caps = saved;
+    }
+
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
-        self.record_len_caps(&node.cond);
-        syn::visit::visit_expr_if(self, node);
+        let saved = self.active_caps.clone();
+        self.active_caps.extend(guaranteed_upper_bounds(
+            &node.cond,
+            self.storage_collections,
+        ));
+        self.visit_block(&node.then_branch);
+        self.active_caps = saved.clone();
+
+        if let Some((_, else_expr)) = &node.else_branch {
+            self.visit_expr(else_expr);
+        }
+        self.active_caps = saved;
     }
 
     fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
-        self.record_len_caps(&node.cond);
-        syn::visit::visit_expr_while(self, node);
+        let saved = self.active_caps.clone();
+        self.active_caps.extend(guaranteed_upper_bounds(
+            &node.cond,
+            self.storage_collections,
+        ));
+        self.visit_block(&node.body);
+        self.active_caps = saved;
     }
 
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        if is_assert_or_guard_macro(node) {
-            let tokens = node.tokens.to_string();
-            for name in self.storage_collections {
-                if tokens_mentions_len(&tokens, name) { self.capped_collections.insert(name.clone()); }
-            }
-        }
+        self.active_caps.extend(runtime_guard_upper_bounds(
+            node,
+            self.storage_collections,
+        ));
         syn::visit::visit_macro(self, node);
     }
 
@@ -147,37 +172,111 @@ impl<'ast> Visit<'ast> for IterationVisitor<'_> {
         if let Some((collection, iterator_bounded)) =
             iterated_storage_collection(&node.expr, self.storage_collections)
         {
+            let context_bounded = self.active_caps.contains(&collection);
             self.iterations.push(StorageIteration {
                 collection,
                 line: node.for_token.span.start().line,
                 iterator_bounded,
+                context_bounded,
             });
         }
         syn::visit::visit_expr_for_loop(self, node);
     }
 }
 
-impl IterationVisitor<'_> {
-    fn record_len_caps(&mut self, expr: &syn::Expr) {
-        let mut visitor = LenCapVisitor { storage_collections: self.storage_collections, capped: HashSet::new() };
-        visitor.visit_expr(expr);
-        self.capped_collections.extend(visitor.capped);
+fn guaranteed_upper_bounds(
+    expr: &syn::Expr,
+    storage_collections: &HashSet<String>,
+) -> HashSet<String> {
+    match expr {
+        syn::Expr::Paren(paren) => guaranteed_upper_bounds(&paren.expr, storage_collections),
+        syn::Expr::Group(group) => guaranteed_upper_bounds(&group.expr, storage_collections),
+        syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => {
+            let mut bounds = guaranteed_upper_bounds(&binary.left, storage_collections);
+            bounds.extend(guaranteed_upper_bounds(&binary.right, storage_collections));
+            bounds
+        }
+        syn::Expr::Binary(binary) => {
+            let mut bounds = HashSet::new();
+
+            if matches!(
+                binary.op,
+                syn::BinOp::Lt(_) | syn::BinOp::Le(_) | syn::BinOp::Eq(_)
+            ) {
+                if let Some(name) = len_call_collection(&binary.left) {
+                    if storage_collections.contains(&name) {
+                        bounds.insert(name);
+                    }
+                }
+            }
+
+            if matches!(
+                binary.op,
+                syn::BinOp::Gt(_) | syn::BinOp::Ge(_) | syn::BinOp::Eq(_)
+            ) {
+                if let Some(name) = len_call_collection(&binary.right) {
+                    if storage_collections.contains(&name) {
+                        bounds.insert(name);
+                    }
+                }
+            }
+
+            bounds
+        }
+        _ => HashSet::new(),
     }
 }
 
-struct LenCapVisitor<'a> {
-    storage_collections: &'a HashSet<String>,
-    capped: HashSet<String>,
-}
+fn runtime_guard_upper_bounds(
+    node: &syn::Macro,
+    storage_collections: &HashSet<String>,
+) -> HashSet<String> {
+    let Some(name) = node.path.segments.last().map(|segment| segment.ident.to_string()) else {
+        return HashSet::new();
+    };
 
-impl<'ast> Visit<'ast> for LenCapVisitor<'_> {
-    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if node.method == "len" {
-            if let Some(name) = simple_path_ident(&node.receiver) {
-                if self.storage_collections.contains(&name) { self.capped.insert(name); }
+    if !matches!(name.as_str(), "assert" | "assert_eq" | "ensure" | "require") {
+        return HashSet::new();
+    }
+
+    let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+    let Ok(args) = parser.parse2(node.tokens.clone()) else {
+        return HashSet::new();
+    };
+    let mut args = args.iter();
+    let Some(first) = args.next() else {
+        return HashSet::new();
+    };
+
+    if name == "assert_eq" {
+        let Some(second) = args.next() else {
+            return HashSet::new();
+        };
+        let mut bounds = HashSet::new();
+        if let Some(collection) = len_call_collection(first) {
+            if storage_collections.contains(&collection) {
+                bounds.insert(collection);
             }
         }
-        syn::visit::visit_expr_method_call(self, node);
+        if let Some(collection) = len_call_collection(second) {
+            if storage_collections.contains(&collection) {
+                bounds.insert(collection);
+            }
+        }
+        return bounds;
+    }
+
+    guaranteed_upper_bounds(first, storage_collections)
+}
+
+fn len_call_collection(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Paren(paren) => len_call_collection(&paren.expr),
+        syn::Expr::Group(group) => len_call_collection(&group.expr),
+        syn::Expr::MethodCall(call) if call.method == "len" && call.args.is_empty() => {
+            simple_path_ident(&call.receiver)
+        }
+        _ => None,
     }
 }
 
@@ -251,19 +350,6 @@ fn has_cfg_test(attrs: &[Attribute]) -> bool {
     })
 }
 
-fn is_assert_or_guard_macro(node: &syn::Macro) -> bool {
-    node.path.segments.last().is_some_and(|segment| {
-        matches!(segment.ident.to_string().as_str(),
-            "assert" | "assert_eq" | "assert_ne" | "debug_assert"
-            | "debug_assert_eq" | "debug_assert_ne" | "ensure" | "require")
-    })
-}
-
-fn tokens_mentions_len(tokens: &str, name: &str) -> bool {
-    let compact: String = tokens.chars().filter(|ch| !ch.is_whitespace()).collect();
-    compact.contains(&format!("{name}.len()"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +383,37 @@ impl Contract {
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert!(UnboundedStorageIterationRule::new().check(good).is_empty());
         assert!(UnboundedStorageIterationRule::new().check(paged).is_empty());
+
+        let incidental_check = r#"#[contractimpl]
+impl Contract {
+    pub fn scan(env: Env) {
+        let members: Vec<Address> = env.storage().persistent().get(&KEY).unwrap_or(Vec::new(&env));
+        if members.len() <= 100 { record_metric(); }
+        for member in members.iter() { consume(member); }
+    }
+}"#;
+        let non_bound = r#"#[contractimpl]
+impl Contract {
+    pub fn scan(env: Env) {
+        let members: Vec<Address> = env.storage().persistent().get(&KEY).unwrap_or(Vec::new(&env));
+        assert!(members.len() != 0);
+        debug_assert!(members.len() <= 100);
+        for member in members.iter() { consume(member); }
+    }
+}"#;
+        let branch_bound = r#"#[contractimpl]
+impl Contract {
+    pub fn scan(env: Env) {
+        let members: Vec<Address> = env.storage().persistent().get(&KEY).unwrap_or(Vec::new(&env));
+        if members.len() <= 100 {
+            for member in members.iter() { consume(member); }
+        }
+    }
+}"#;
+
+        assert_eq!(UnboundedStorageIterationRule::new().check(incidental_check).len(), 1);
+        assert_eq!(UnboundedStorageIterationRule::new().check(non_bound).len(), 1);
+        assert!(UnboundedStorageIterationRule::new().check(branch_bound).is_empty());
 
         insta::assert_yaml_snapshot!(findings, @r###"
         - rule_name: SANCT_UNBOUNDED_STORAGE_ITERATION
