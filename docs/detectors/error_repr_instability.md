@@ -69,6 +69,9 @@ numeric discriminant alongside normal finding-suppression entries.
 
 The baseline command resolves explicit and implicit `u32` discriminants for
 `#[contracterror]` + `#[repr(u32)]` enums and stores them project-relative.
+`sanctifier analyze` supplies this stored snapshot to the detector for each file
+and includes ABI drift in text/JSON reports and the JSON failure status.
+`--no-baseline` disables this comparison along with finding suppression.
 During analysis, the rule compares variants with the same file, enum, and name
 against that snapshot. A changed numeric value is an Error finding. Pure source
 reordering is allowed when explicit discriminants remain unchanged.
