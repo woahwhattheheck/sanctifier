@@ -136,6 +136,76 @@ enabled = true
 }
 
 #[test]
+fn test_analyze_registry_rule_severity_and_disable_flow_into_output() {
+    let temp_dir = tempdir().unwrap();
+    let contract = temp_dir.path().join("contract.rs");
+    fs::write(
+        &contract,
+        r#"
+fn demo() {
+    let unused = 1u64;
+}
+"#,
+    )
+    .unwrap();
+
+    let config = temp_dir.path().join(".sanctify.toml");
+    fs::write(
+        &config,
+        r#"
+[rules.unused_variable]
+severity = "info"
+"#,
+    )
+    .unwrap();
+
+    let info = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("analyze")
+        .arg(&contract)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert!(
+        info.status.success(),
+        "info-only configured rule should not fail analysis: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&info.stdout).unwrap();
+    let findings = report["registry_findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0]["rule_name"], "unused_variable");
+    assert_eq!(findings[0]["severity"], "Info");
+    assert_eq!(report["summary"]["registry_findings"], 1);
+    assert_eq!(report["summary"]["total_findings"], 1);
+
+    fs::write(
+        &config,
+        r#"
+[rules.unused_variable]
+enabled = false
+severity = "info"
+"#,
+    )
+    .unwrap();
+
+    let disabled = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("analyze")
+        .arg(&contract)
+        .arg("--format")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert!(disabled.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&disabled.stdout).unwrap();
+    assert!(report["registry_findings"].as_array().unwrap().is_empty());
+    assert_eq!(report["summary"]["registry_findings"], 0);
+    assert_eq!(report["summary"]["total_findings"], 0);
+}
+
+#[test]
 fn test_analyze_empty_macro_heavy() {
     let mut cmd = Command::cargo_bin("sanctifier").unwrap();
     let fixture_path = env::current_dir()

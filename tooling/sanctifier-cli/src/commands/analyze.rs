@@ -6,7 +6,7 @@ use colored::*;
 use sanctifier_core::baseline::{apply_baseline, load_baseline, BaselineEntry};
 use sanctifier_core::finding_codes;
 use sanctifier_core::memory::{MemoryGuard, MemoryTracker};
-use sanctifier_core::{Analyzer, SanctifyConfig, SizeWarningLevel};
+use sanctifier_core::{Analyzer, RuleViolation, SanctifyConfig, Severity, SizeWarningLevel};
 use serde_json;
 use std::fs;
 use std::io::{self, Write};
@@ -141,6 +141,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     let mut unhandled_results = Vec::new();
     let mut upgrade_reports = Vec::new();
     let mut smt_issues = Vec::new();
+    let mut registry_findings = Vec::new();
 
     if path.is_dir() {
         walk_dir(
@@ -159,6 +160,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             &mut unhandled_results,
             &mut upgrade_reports,
             &mut smt_issues,
+            &mut registry_findings,
         )?;
     } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
         if let Ok(content) = fs::read_to_string(path) {
@@ -186,6 +188,11 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             }
             upgrade_reports.push(analyzer.analyze_upgrade_patterns(&content));
             smt_issues.extend(analyzer.verify_smt_invariants(&content));
+            registry_findings.extend(configured_registry_findings(
+                &content,
+                &file_name,
+                &analyzer,
+            ));
         }
     }
 
@@ -268,6 +275,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         rep.findings.retain(|f| !is_inline_suppressed(&f.location, finding_codes::UPGRADE_RISK));
     }
     smt_issues.retain(|s| !is_inline_suppressed(&s.location, finding_codes::SMT_INVARIANT_VIOLATION));
+    registry_findings.retain(|finding| {
+        let code = format!("rule:{}", finding.rule_name);
+        !is_inline_suppressed(&finding.location, &code)
+    });
 
     unsafe_patterns.retain(|u| {
         let file_name = u.snippet.split(':').next().unwrap_or("");
@@ -352,6 +363,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     let ctx = format!("{}|{}", s.function_name, s.description);
                     current_flat.push(FlatFinding::new(finding_codes::SMT_INVARIANT_VIOLATION, &s.location, &ctx));
                 }
+                for finding in &registry_findings {
+                    let code = format!("rule:{}", finding.rule_name);
+                    current_flat.push(FlatFinding::new(&code, &finding.location, &finding.message));
+                }
 
                 let (new_flat, stale) = apply_baseline(bl, &current_flat);
                 let new_fps: HashSet<String> = new_flat.iter().map(|f| f.fingerprint()).collect();
@@ -418,6 +433,11 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     let fp = FlatFinding::new(finding_codes::SMT_INVARIANT_VIOLATION, &s.location, &ctx).fingerprint();
                     !suppressed_fps.contains(&fp)
                 });
+                registry_findings.retain(|finding| {
+                    let code = format!("rule:{}", finding.rule_name);
+                    let fp = FlatFinding::new(&code, &finding.location, &finding.message).fingerprint();
+                    !suppressed_fps.contains(&fp)
+                });
 
                 (suppressed_count, stale_entries)
             }
@@ -446,7 +466,8 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             .iter()
             .map(|r| r.findings.len())
             .sum::<usize>()
-        + smt_issues.len();
+        + smt_issues.len()
+        + registry_findings.len();
 
     // ── Memory guard check ───────────────────────────────────────────────────
     if let Some(ref guard) = mem_guard {
@@ -473,6 +494,9 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         || !panic_issues.is_empty()
         || !smt_issues.is_empty()
         || !unhandled_results.is_empty()
+        || registry_findings
+            .iter()
+            .any(|finding| finding.severity == Severity::Error)
         || size_warnings
             .iter()
             .any(|w| w.level == SizeWarningLevel::ExceedsLimit);
@@ -536,6 +560,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             "unhandled_results": unhandled_results,
             "upgrade_reports": upgrade_reports,
             "smt_issues": smt_issues,
+            "registry_findings": registry_findings,
             "vulnerability_db_matches": vuln_matches,
             "vulnerability_db_version": vuln_db.version,
             "metadata": {
@@ -561,6 +586,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 "event_issues": event_issues.len(),
                 "unhandled_results": unhandled_results.len(),
                 "smt_issues": smt_issues.len(),
+                "registry_findings": registry_findings.len(),
                 "has_critical": has_critical,
                 "has_high": has_high,
             },
@@ -636,6 +662,15 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     "function_name": s.function_name,
                     "description": s.description,
                     "location": s.location,
+                })).collect::<Vec<_>>(),
+                "registry_findings": registry_findings.iter().map(|finding| serde_json::json!({
+                    "code": format!("rule:{}", finding.rule_name),
+                    "rule_name": finding.rule_name,
+                    "severity": finding.severity,
+                    "message": finding.message,
+                    "location": finding.location,
+                    "suggestion": finding.suggestion,
+                    "patches": finding.patches,
                 })).collect::<Vec<_>>(),
             },
         });
@@ -805,6 +840,21 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         }
     }
 
+    if !registry_findings.is_empty() {
+        println!("\n{} Found configured registry rule issues!", "⚠️".yellow());
+        for finding in &registry_findings {
+            let code = format!("rule:{}", finding.rule_name);
+            println!(
+                "   {} [{}] {:?}: {}",
+                "->".red(),
+                code.bold(),
+                finding.severity,
+                finding.message
+            );
+            println!("      Location: {}", finding.location);
+        }
+    }
+
     // Vulnerability database matches
     if vuln_matches.is_empty() {
         println!(
@@ -905,6 +955,7 @@ fn walk_dir(
     unhandled_results: &mut Vec<sanctifier_core::UnhandledResultIssue>,
     upgrade_reports: &mut Vec<sanctifier_core::UpgradeReport>,
     smt_issues: &mut Vec<sanctifier_core::smt::SmtInvariantIssue>,
+    registry_findings: &mut Vec<RuleViolation>,
 ) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -936,6 +987,7 @@ fn walk_dir(
                 unhandled_results,
                 upgrade_reports,
                 smt_issues,
+                registry_findings,
             )?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             if let Ok(content) = fs::read_to_string(&path) {
@@ -1015,10 +1067,47 @@ fn walk_dir(
                     i.location = format!("{}:{}", file_name, i.location);
                 }
                 smt_issues.extend(smt);
+
+                registry_findings.extend(configured_registry_findings(
+                    &content,
+                    &file_name,
+                    analyzer,
+                ));
             }
         }
     }
     Ok(())
+}
+
+fn configured_registry_findings(
+    content: &str,
+    file_name: &str,
+    analyzer: &Analyzer,
+) -> Vec<RuleViolation> {
+    const TYPED_RULE_MIRRORS: [&str; 5] = [
+        "auth_gap",
+        "panic_detection",
+        "arithmetic_overflow",
+        "ledger_size",
+        "unhandled_result",
+    ];
+
+    analyzer
+        .run_rules(content)
+        .into_iter()
+        .filter(|finding| {
+            analyzer.config.rules.contains_key(&finding.rule_name)
+                && !TYPED_RULE_MIRRORS.contains(&finding.rule_name.as_str())
+        })
+        .map(|mut finding| {
+            finding.location = if finding.location.is_empty() {
+                file_name.to_string()
+            } else {
+                format!("{}:{}", file_name, finding.location)
+            };
+            finding
+        })
+        .collect()
 }
 
 fn is_soroban_project(path: &Path) -> bool {
