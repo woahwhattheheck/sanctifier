@@ -896,8 +896,6 @@ fn load_config(path: &Path) -> SanctifyConfig {
     SanctifyConfig::default()
 }
 
-#[allow(clippy::too_many_arguments)]
-
 fn write_junit_report<W: Write>(mut writer: W, report: &serde_json::Value) -> io::Result<()> {
     let mut cases: Vec<(String, String, String, String)> = Vec::new();
 
@@ -1024,6 +1022,7 @@ fn xml_escape(value: &str) -> String {
     escaped
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_dir(
     dir: &Path,
     analyzer: &Analyzer,
