@@ -121,12 +121,26 @@ impl WeakRandomVisitor {
 
 impl<'ast> Visit<'ast> for WeakRandomVisitor {
     fn visit_local(&mut self, node: &'ast syn::Local) {
-        if let (Some(name), Some(init)) = (pat_ident(&node.pat), node.init.as_ref()) {
-            if expr_is_tainted(&init.expr, &self.tainted) {
+        if let Some(name) = pat_ident(&node.pat) {
+            // A new binding with the same identifier shadows the old one. Compute
+            // the initializer against the pre-shadow state first (so `let x = x`
+            // can propagate taint), then replace rather than accumulate state.
+            let (is_tainted, is_reduced) = node
+                .init
+                .as_ref()
+                .map(|init| {
+                    let is_tainted = expr_is_tainted(&init.expr, &self.tainted);
+                    (is_tainted, is_tainted && contains_modulo(&init.expr))
+                })
+                .unwrap_or((false, false));
+
+            self.tainted.remove(&name);
+            self.reduced.remove(&name);
+            if is_tainted {
                 self.tainted.insert(name.clone());
-                if contains_modulo(&init.expr) {
-                    self.reduced.insert(name);
-                }
+            }
+            if is_reduced {
+                self.reduced.insert(name);
             }
         }
         visit::visit_local(self, node);
@@ -134,11 +148,18 @@ impl<'ast> Visit<'ast> for WeakRandomVisitor {
 
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
         if let Some(name) = path_ident(&node.left) {
-            if expr_is_tainted(&node.right, &self.tainted) {
+            // Assignment replaces the variable's previous value. Evaluate the
+            // RHS before clearing so self-derived assignments still propagate.
+            let is_tainted = expr_is_tainted(&node.right, &self.tainted);
+            let is_reduced = is_tainted && contains_modulo(&node.right);
+
+            self.tainted.remove(&name);
+            self.reduced.remove(&name);
+            if is_tainted {
                 self.tainted.insert(name.clone());
-                if contains_modulo(&node.right) {
-                    self.reduced.insert(name);
-                }
+            }
+            if is_reduced {
+                self.reduced.insert(name);
             }
         }
         visit::visit_expr_assign(self, node);
@@ -310,4 +331,36 @@ fn is_selection_name(name: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_reassignment_clears_previous_ledger_taint() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>, reveal: u64) -> u64 {
+    let mut idx = env.ledger().timestamp() % players.len() as u64;
+    idx = reveal % players.len() as u64;
+    players[idx as usize]
+}
+"#;
+
+        assert!(WeakRandomRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn clean_shadowing_binding_clears_previous_ledger_taint() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>, reveal: u64) -> u64 {
+    let idx = env.ledger().sequence() % players.len() as u32;
+    let idx = reveal % players.len() as u64;
+    players[idx as usize]
+}
+"#;
+
+        assert!(WeakRandomRule::new().check(source).is_empty());
+    }
 }
