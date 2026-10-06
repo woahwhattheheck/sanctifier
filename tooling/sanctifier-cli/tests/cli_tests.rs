@@ -335,6 +335,43 @@ fn test_baseline_trend_renders_markdown_and_html() {
 }
 
 #[test]
+fn test_baseline_trend_refuses_to_overwrite_stored_baseline() {
+    let temp_dir = tempdir().unwrap();
+    let contract = temp_dir.path().join("contract.rs");
+    let fixture = env::current_dir()
+        .unwrap()
+        .join("tests/fixtures/vulnerable_contract.rs");
+    fs::copy(&fixture, &contract).unwrap();
+
+    Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("baseline")
+        .arg(contract.to_str().unwrap())
+        .assert()
+        .success();
+
+    let baseline_path = temp_dir.path().join(".sanctify-baseline.json");
+    let before = fs::read_to_string(&baseline_path).unwrap();
+    fs::write(&contract, "fn safe_function() {}\n").unwrap();
+
+    Command::cargo_bin("sanctifier")
+        .unwrap()
+        .current_dir(temp_dir.path())
+        .arg("baseline")
+        .arg("--trend")
+        .arg("--output")
+        .arg(".sanctify-baseline.json")
+        .arg("contract.rs")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "--output cannot overwrite the stored .sanctify-baseline.json",
+        ));
+
+    assert_eq!(fs::read_to_string(&baseline_path).unwrap(), before);
+}
+
+#[test]
 fn test_analyze_suppresses_baselined_findings() {
     let temp_dir = tempdir().unwrap();
     let contract = temp_dir.path().join("contract.rs");
