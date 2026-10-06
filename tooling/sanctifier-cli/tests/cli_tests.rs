@@ -292,6 +292,48 @@ fn test_baseline_update_flag_overwrites() {
     assert_ne!(created_at_1, created_at_2, "baseline should be refreshed");
 }
 
+
+#[test]
+fn test_baseline_trend_renders_markdown_and_html() {
+    let temp_dir = tempdir().unwrap();
+    let contract = temp_dir.path().join("contract.rs");
+    let fixture = env::current_dir()
+        .unwrap()
+        .join("tests/fixtures/vulnerable_contract.rs");
+    fs::copy(&fixture, &contract).unwrap();
+
+    Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("baseline")
+        .arg(contract.to_str().unwrap())
+        .assert()
+        .success();
+
+    fs::write(&contract, "fn safe_function() {}\n").unwrap();
+
+    Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("baseline")
+        .arg("--trend")
+        .arg(contract.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("# Sanctifier Baseline Trend"))
+        .stdout(predicates::str::contains("| Fixed |"));
+
+    Command::cargo_bin("sanctifier")
+        .unwrap()
+        .arg("baseline")
+        .arg("--trend")
+        .arg("--format")
+        .arg("html")
+        .arg(contract.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("<h1>Sanctifier Baseline Trend</h1>"))
+        .stdout(predicates::str::contains("<h2>Fixed</h2>"));
+}
+
 #[test]
 fn test_analyze_suppresses_baselined_findings() {
     let temp_dir = tempdir().unwrap();

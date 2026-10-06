@@ -8,7 +8,7 @@
 
 use clap::Args;
 use colored::*;
-use sanctifier_core::baseline::{save_baseline, BaselineEntry, FlatFinding, BASELINE_FILE};
+use sanctifier_core::baseline::{load_baseline, save_baseline, BaselineEntry, BaselineTrend, FlatFinding, BASELINE_FILE};
 use sanctifier_core::finding_codes;
 use sanctifier_core::{Analyzer, SanctifyConfig};
 use std::fs;
@@ -29,6 +29,18 @@ pub struct BaselineArgs {
     /// Quiet — only print the path of the written file (useful in CI).
     #[arg(short, long)]
     pub quiet: bool,
+
+    /// Render added/fixed/persistent findings against the stored baseline instead of updating it.
+    #[arg(long)]
+    pub trend: bool,
+
+    /// Trend report output format: markdown or html.
+    #[arg(long, requires = "trend")]
+    pub format: Option<String>,
+
+    /// Write the trend report to a file instead of stdout.
+    #[arg(short, long, requires = "trend")]
+    pub output: Option<PathBuf>,
 }
 
 pub fn exec(args: BaselineArgs) -> anyhow::Result<()> {
@@ -44,6 +56,45 @@ pub fn exec(args: BaselineArgs) -> anyhow::Result<()> {
     };
 
     let baseline_path = project_root.join(BASELINE_FILE);
+
+    if args.trend {
+        if args.update {
+            anyhow::bail!("--trend and --update cannot be used together");
+        }
+        if args.quiet {
+            anyhow::bail!("--trend and --quiet cannot be used together");
+        }
+
+        let baseline = load_baseline(&project_root)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No {} found in {}. Run `sanctifier baseline` first.",
+                BASELINE_FILE,
+                project_root.display()
+            )
+        })?;
+
+        let config = load_config(path);
+        let analyzer = Analyzer::new(config.clone());
+        let vuln_db = VulnDatabase::load_default();
+        let flat = collect_flat_findings(path, &analyzer, &vuln_db, &config)?;
+        let trend = BaselineTrend::compare(&baseline, &flat);
+
+        let rendered = match args.format.as_deref().unwrap_or("markdown") {
+            "markdown" => trend.render_markdown(),
+            "html" => trend.render_html(),
+            other => anyhow::bail!(
+                "Unsupported trend format '{}'; expected markdown or html",
+                other
+            ),
+        };
+
+        if let Some(output) = &args.output {
+            fs::write(output, rendered)?;
+        } else {
+            print!("{rendered}");
+        }
+        return Ok(());
+    }
 
     if baseline_path.exists() && !args.update {
         eprintln!(
