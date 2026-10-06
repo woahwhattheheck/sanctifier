@@ -113,7 +113,13 @@ fn collect_inline_suppression_audit(
     let mut entries = Vec::new();
 
     if path.is_file() {
-        if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+        if path.file_name().and_then(|value| value.to_str()) == Some("Cargo.toml") {
+            let project_dir = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            collect_inline_suppression_audit_dir(project_dir, config, &mut entries);
+        } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
             if let Ok(content) = fs::read_to_string(path) {
                 entries.extend(parse_inline_suppressions(
                     &path.display().to_string(),
@@ -1255,5 +1261,31 @@ fn demo() {}
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].0, 2);
         assert_eq!(active[0].1, "S001");
+    }
+
+    #[test]
+    fn cargo_manifest_path_scans_crate_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let src_dir = temp.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            src_dir.join("lib.rs"),
+            "// sanctifier-ignore:S001 - reviewed false positive due to generated accessor\nfn demo() {}\n",
+        )
+        .unwrap();
+
+        let manifest = temp.path().join("Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let entries =
+            collect_inline_suppression_audit(&manifest, &SanctifyConfig::default());
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].code, "S001");
+        assert_eq!(Path::new(&entries[0].file), src_dir.join("lib.rs").as_path());
     }
 }
