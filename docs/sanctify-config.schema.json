@@ -24,7 +24,6 @@
         "type": "string",
         "minLength": 1
       },
-      "uniqueItems": true,
       "default": [
         "auth_gaps",
         "panics",
@@ -32,7 +31,8 @@
         "ledger_size",
         "events"
       ],
-      "description": "Rule names enabled for analysis."
+      "description": "Rule names enabled for analysis.",
+      "minItems": 1
     },
     "ledger_limit": {
       "type": "integer",
