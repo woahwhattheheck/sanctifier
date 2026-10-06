@@ -71,7 +71,19 @@
       },
       "additionalProperties": false
     },
-    "error_codes": { "type": "array", "items": { "type": "string" } },
+    "error_codes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "category", "description"],
+        "properties": {
+          "code": { "type": "string" },
+          "category": { "type": "string" },
+          "description": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
     "summary": {
       "type": "object",
       "required": [
