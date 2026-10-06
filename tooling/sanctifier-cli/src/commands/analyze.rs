@@ -488,18 +488,39 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         );
     }
 
-    let has_critical =
-        !auth_gaps.is_empty() || panic_issues.iter().any(|p| p.issue_type == "panic!");
-    let has_high = !arithmetic_issues.is_empty()
-        || !panic_issues.is_empty()
+    // Preserve legacy exit behavior when no explicit severity is configured.
+    // Once a typed mirror has an exact severity override, that override controls
+    // whether its findings fail analysis, matching registry-backed rules.
+    let auth_override = analyzer.config.rule_severity("auth_gap");
+    let panic_override = analyzer.config.rule_severity("panic_detection");
+    let arithmetic_override = analyzer.config.rule_severity("arithmetic_overflow");
+    let ledger_override = analyzer.config.rule_severity("ledger_size");
+    let unhandled_override = analyzer.config.rule_severity("unhandled_result");
+
+    let has_critical = (!auth_gaps.is_empty()
+        && severity_override_blocks(auth_override, true))
+        || (!panic_issues.is_empty()
+            && match panic_override {
+                Some(severity) => severity == Severity::Error,
+                None => panic_issues.iter().any(|p| p.issue_type == "panic!"),
+            });
+    let has_high = (!arithmetic_issues.is_empty()
+        && severity_override_blocks(arithmetic_override, true))
+        || (!panic_issues.is_empty()
+            && severity_override_blocks(panic_override, true))
         || !smt_issues.is_empty()
-        || !unhandled_results.is_empty()
+        || (!unhandled_results.is_empty()
+            && severity_override_blocks(unhandled_override, true))
         || registry_findings
             .iter()
             .any(|finding| finding.severity == Severity::Error)
-        || size_warnings
-            .iter()
-            .any(|w| w.level == SizeWarningLevel::ExceedsLimit);
+        || (!size_warnings.is_empty()
+            && match ledger_override {
+                Some(severity) => severity == Severity::Error,
+                None => size_warnings
+                    .iter()
+                    .any(|w| w.level == SizeWarningLevel::ExceedsLimit),
+            });
     let timestamp = chrono_timestamp();
 
     let webhook_payload = ScanWebhookPayload {
@@ -600,6 +621,15 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 })).collect::<Vec<_>>(),
                 "ledger_size_warnings": size_warnings.iter().map(|w| serde_json::json!({
                     "code": finding_codes::LEDGER_SIZE_RISK,
+                    "severity": configured_rule_severity(
+                        &analyzer,
+                        "ledger_size",
+                        if w.level == SizeWarningLevel::ExceedsLimit {
+                            Severity::Error
+                        } else {
+                            Severity::Warning
+                        },
+                    ),
                     "struct_name": w.struct_name,
                     "estimated_size": w.estimated_size,
                     "limit": w.limit,
@@ -613,16 +643,23 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 })).collect::<Vec<_>>(),
                 "auth_gaps": auth_gaps.iter().map(|g| serde_json::json!({
                     "code": finding_codes::AUTH_GAP,
+                    "severity": configured_rule_severity(&analyzer, "auth_gap", Severity::Warning),
                     "function": g,
                 })).collect::<Vec<_>>(),
                 "panic_issues": panic_issues.iter().map(|p| serde_json::json!({
                     "code": finding_codes::PANIC_USAGE,
+                    "severity": configured_rule_severity(
+                        &analyzer,
+                        "panic_detection",
+                        if p.issue_type == "panic!" { Severity::Error } else { Severity::Warning },
+                    ),
                     "function_name": p.function_name,
                     "issue_type": p.issue_type,
                     "location": p.location,
                 })).collect::<Vec<_>>(),
                 "arithmetic_issues": arithmetic_issues.iter().map(|a| serde_json::json!({
                     "code": finding_codes::ARITHMETIC_OVERFLOW,
+                    "severity": configured_rule_severity(&analyzer, "arithmetic_overflow", Severity::Warning),
                     "function_name": a.function_name,
                     "operation": a.operation,
                     "suggestion": a.suggestion,
@@ -644,6 +681,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 })).collect::<Vec<_>>(),
                 "unhandled_results": unhandled_results.iter().map(|r| serde_json::json!({
                     "code": finding_codes::UNHANDLED_RESULT,
+                    "severity": configured_rule_severity(&analyzer, "unhandled_result", Severity::Warning),
                     "function_name": r.function_name,
                     "call_expression": r.call_expression,
                     "location": r.location,
@@ -719,9 +757,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         println!("\n{} Found potential Authentication Gaps!", "⚠️".yellow());
         for gap in auth_gaps {
             println!(
-                "   {} [{}] Function: {}",
+                "   {} [{}] {:?} Function: {}",
                 "->".red(),
                 finding_codes::AUTH_GAP.bold(),
+                configured_rule_severity(&analyzer, "auth_gap", Severity::Warning),
                 gap.bold()
             );
         }
@@ -733,9 +772,14 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         println!("\n{} Found explicit Panics/Unwraps!", "⚠️".yellow());
         for issue in panic_issues {
             println!(
-                "   {} [{}] Type: {}",
+                "   {} [{}] {:?} Type: {}",
                 "->".red(),
                 finding_codes::PANIC_USAGE.bold(),
+                configured_rule_severity(
+                    &analyzer,
+                    "panic_detection",
+                    if issue.issue_type == "panic!" { Severity::Error } else { Severity::Warning },
+                ),
                 issue.issue_type.bold()
             );
             println!("      Location: {}", issue.location);
@@ -748,9 +792,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         println!("\n{} Found unchecked Arithmetic Operations!", "⚠️".yellow());
         for issue in arithmetic_issues {
             println!(
-                "   {} [{}] Op: {}",
+                "   {} [{}] {:?} Op: {}",
                 "->".red(),
                 finding_codes::ARITHMETIC_OVERFLOW.bold(),
+                configured_rule_severity(&analyzer, "arithmetic_overflow", Severity::Warning),
                 issue.operation.bold()
             );
             println!("      Location: {}", issue.location);
@@ -763,9 +808,18 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         println!("\n{} Found Ledger Size Warnings!", "⚠️".yellow());
         for warning in size_warnings {
             println!(
-                "   {} [{}] Struct: {}",
+                "   {} [{}] {:?} Struct: {}",
                 "->".red(),
                 finding_codes::LEDGER_SIZE_RISK.bold(),
+                configured_rule_severity(
+                    &analyzer,
+                    "ledger_size",
+                    if warning.level == SizeWarningLevel::ExceedsLimit {
+                        Severity::Error
+                    } else {
+                        Severity::Warning
+                    },
+                ),
                 warning.struct_name.bold()
             );
             println!("      Size: {} bytes", warning.estimated_size);
@@ -794,9 +848,10 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         println!("\n{} Found Unhandled Result issues!", "⚠️".yellow());
         for issue in &unhandled_results {
             println!(
-                "   {} [{}] Function: {}",
+                "   {} [{}] {:?} Function: {}",
                 "->".red(),
                 finding_codes::UNHANDLED_RESULT.bold(),
+                configured_rule_severity(&analyzer, "unhandled_result", Severity::Warning),
                 issue.function_name.bold()
             );
             println!("      Call: {}", issue.call_expression);
@@ -902,6 +957,22 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn configured_rule_severity(
+    analyzer: &Analyzer,
+    rule_name: &str,
+    default: Severity,
+) -> Severity {
+    analyzer.config.rule_severity(rule_name).unwrap_or(default)
+}
+
+fn severity_override_blocks(override_severity: Option<Severity>, legacy_default: bool) -> bool {
+    match override_severity {
+        Some(Severity::Error) => true,
+        Some(Severity::Warning | Severity::Info) => false,
+        None => legacy_default,
+    }
 }
 
 fn chrono_timestamp() -> String {
