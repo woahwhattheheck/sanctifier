@@ -53,10 +53,12 @@ is intentionally bound to specific arguments.
 ## How Sanctifier detects it
 
 The rule inspects public free functions and public impl methods whose name is
-exactly `migrate`. It walks the function body and accepts either
-`require_auth()` or `require_auth_for_args()`, including method-call,
-path-call, and macro-call forms. A public `migrate` with none of those guards
-emits `SANCT_MIGRATE_AUTH`.
+exactly `migrate`. It accepts `require_auth()` or `require_auth_for_args()`
+only when the method receiver resolves to an `Address`-typed parameter. The
+validated UFCS form `Address::require_auth(&admin)` is also recognized when its
+argument resolves to such a parameter. Macro and free-function lookalikes are
+not treated as authorization guards. A public `migrate` with no structurally
+bound guard emits `SANCT_MIGRATE_AUTH`.
 
 **Limitations:** this is an intraprocedural structural check. It does not prove
 that the authenticated address is the correct administrator, that the guard
