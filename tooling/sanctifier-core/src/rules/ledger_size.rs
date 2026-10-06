@@ -307,6 +307,10 @@ impl LedgerSizeRule {
 
 }
 
+fn round_up_xdr_word(bytes: usize) -> usize {
+    bytes.saturating_add(XDR_WORD_BYTES - 1) / XDR_WORD_BYTES * XDR_WORD_BYTES
+}
+
 fn has_contracttype(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         if let Meta::Path(path) = &attr.meta {
