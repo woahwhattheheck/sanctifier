@@ -586,7 +586,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             "summary",
             None,
             &serde_json::json!({
-                "total_findings": total_findings,
+                "total_findings": total_findings + vuln_matches.len(),
                 "storage_collisions": collisions.len(),
                 "auth_gaps": auth_gaps.len(),
                 "panic_issues": panic_issues.len(),
