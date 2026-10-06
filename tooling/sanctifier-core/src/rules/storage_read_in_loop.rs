@@ -141,6 +141,11 @@ struct MutationVisitor {
 }
 
 impl<'ast> Visit<'ast> for MutationVisitor {
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        collect_pat_idents(&node.pat, &mut self.variants);
+        syn::visit::visit_local(self, node);
+    }
+
     fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
         collect_expr_idents(&node.left, &mut self.variants);
         syn::visit::visit_expr_assign(self, node);
@@ -325,6 +330,23 @@ mod tests {
                 pub fn scan(env: Env, users: Vec<Address>) {
                     for user in users.iter() {
                         let balance: i128 = env.storage().persistent().get(&user).unwrap_or(0);
+                        consume(balance);
+                    }
+                }
+            }
+        "#;
+
+        assert!(StorageReadInLoopRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn ignores_key_derived_from_loop_local_binding() {
+        let source = r#"
+            impl Contract {
+                pub fn scan(env: Env, users: Vec<Address>) {
+                    for user in users.iter() {
+                        let key = user.clone();
+                        let balance: i128 = env.storage().persistent().get(&key).unwrap_or(0);
                         consume(balance);
                     }
                 }
