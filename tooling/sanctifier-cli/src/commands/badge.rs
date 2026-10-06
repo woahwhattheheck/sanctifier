@@ -68,7 +68,7 @@ struct AnalyzeFindings {
     #[serde(default)]
     unsafe_patterns: Vec<serde_json::Value>,
     #[serde(default)]
-    custom_rules: Vec<serde_json::Value>,
+    custom_rules: Vec<AnalyzeCustomRule>,
     #[serde(default)]
     event_issues: Vec<serde_json::Value>,
     #[serde(default)]
@@ -83,6 +83,12 @@ struct AnalyzePanicIssue {
 #[derive(Debug, Deserialize)]
 struct AnalyzeSizeWarning {
     level: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalyzeCustomRule {
+    #[serde(default)]
+    severity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -224,7 +230,6 @@ fn severity_counts(report: &AnalyzeReport) -> SeverityCounts {
             .count();
     let medium = report.findings.storage_collisions.len()
         + report.findings.unsafe_patterns.len()
-        + report.findings.custom_rules.len()
         + report.findings.event_issues.len()
         + report.findings.upgrade_risks.len();
     let low = report
@@ -234,12 +239,21 @@ fn severity_counts(report: &AnalyzeReport) -> SeverityCounts {
         .filter(|warning| warning.level != "ExceedsLimit")
         .count();
 
-    SeverityCounts {
+    let mut counts = SeverityCounts {
         critical,
         high,
         medium,
         low,
+    };
+    for rule in &report.findings.custom_rules {
+        match rule.severity.as_deref().unwrap_or("medium").to_ascii_lowercase().as_str() {
+            "critical" => counts.critical += 1,
+            "high" => counts.high += 1,
+            "low" | "info" => counts.low += 1,
+            _ => counts.medium += 1,
+        }
     }
+    counts
 }
 
 fn badge_presentation(report: &AnalyzeReport, variant: &str) -> anyhow::Result<BadgePresentation> {
@@ -425,6 +439,25 @@ mod tests {
             badge_presentation(&report, "trend").unwrap().value,
             "+14 / -2"
         );
+    }
+
+    #[test]
+    fn custom_rule_severity_is_preserved() {
+        let report: AnalyzeReport = serde_json::from_str(r#"{
+          "summary": {
+            "total_findings": 1,
+            "has_critical": false,
+            "has_high": false
+          },
+          "findings": {
+            "custom_rules": [{"severity": "critical"}]
+          }
+        }"#).expect("report fixture should parse");
+
+        let counts = severity_counts(&report);
+        assert_eq!(counts.critical, 1);
+        assert_eq!(counts.medium, 0);
+        assert_eq!(badge_presentation(&report, "grade").unwrap().value, "F");
     }
 
     #[test]
