@@ -1,5 +1,6 @@
 use crate::finding_codes::SIGNED_QUANTITY;
 use crate::rules::{Rule, RuleViolation, Severity};
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -185,14 +186,11 @@ impl<'ast> Visit<'ast> for GuardVisitor<'_> {
             .map(|segment| segment.ident.to_string())
             .unwrap_or_default();
 
-        if matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure") {
-            let compact = node.tokens.to_string().replace(' ', "");
-            let ge_zero = format!("{}>=0", self.target);
-            let zero_le = format!("0<={}", self.target);
-            if compact.contains(&ge_zero) || compact.contains(&zero_le) {
-                self.guarded = true;
-                return;
-            }
+        if matches!(name.as_str(), "assert" | "debug_assert" | "require" | "ensure")
+            && macro_proves_nonnegative(node, self.target)
+        {
+            self.guarded = true;
+            return;
         }
 
         syn::visit::visit_macro(self, node);
@@ -209,6 +207,46 @@ impl<'ast> Visit<'ast> for GuardVisitor<'_> {
 
         syn::visit::visit_expr_if(self, node);
     }
+}
+
+fn macro_proves_nonnegative(mac: &syn::Macro, target: &str) -> bool {
+    let parser =
+        syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+    let Ok(args) = parser.parse2(mac.tokens.clone()) else {
+        return false;
+    };
+
+    args.iter()
+        .any(|expr| condition_proves_nonnegative(expr, target))
+}
+
+fn condition_proves_nonnegative(expr: &syn::Expr, target: &str) -> bool {
+    let expr = unwrap_parens(expr);
+    let syn::Expr::Binary(binary) = expr else {
+        return false;
+    };
+
+    match (
+        simple_ident(&binary.left),
+        zero_literal(&binary.right),
+        &binary.op,
+    ) {
+        (Some(name), true, syn::BinOp::Ge(_)) if name == target => return true,
+        _ => {}
+    }
+
+    match (
+        zero_literal(&binary.left),
+        simple_ident(&binary.right),
+        &binary.op,
+    ) {
+        (true, Some(name), syn::BinOp::Le(_)) if name == target => return true,
+        _ => {}
+    }
+
+    matches!(&binary.op, syn::BinOp::And(_))
+        && (condition_proves_nonnegative(&binary.left, target)
+            || condition_proves_nonnegative(&binary.right, target))
 }
 
 fn condition_rejects_negative(expr: &syn::Expr, target: &str) -> bool {
@@ -345,6 +383,20 @@ mod tests {
                         return;
                     }
                 }
+                consume(amount);
+            }
+        "#;
+
+        let findings = SignedNonnegativeQuantityRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(findings[0].message.contains("amount"));
+    }
+
+    #[test]
+    fn disjunctive_assertion_does_not_count_as_a_nonnegative_guard() {
+        let source = r#"
+            fn withdraw(amount: i128, allow_negative: bool) {
+                assert!(amount >= 0 || allow_negative);
                 consume(amount);
             }
         "#;
