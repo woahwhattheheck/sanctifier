@@ -90,7 +90,7 @@ impl FunctionVisitor {
         self.violations.push(
             RuleViolation::new(
                 UNBOUNDED_RECURSION,
-                Severity::High,
+                Severity::Error,
                 format!(
                     "{UNBOUNDED_RECURSION}: `{fn_name}` directly recurses without an explicit depth bound carried through the recursive call"
                 ),
