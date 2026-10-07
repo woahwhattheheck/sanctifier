@@ -6,4 +6,4 @@ expression: findings
   severity: Warning
   message: "SANCT_CYCLOMATIC_COMPLEXITY: function `hotspot` has cyclomatic complexity 12, above configured threshold 10"
   location: hotspot
-  suggestion: "Split branch-heavy logic into smaller helpers or simplify control flow; raise the detector threshold only when the additional complexity is intentional"
+  suggestion: Split branch-heavy logic into smaller helpers or simplify control flow; raise the detector threshold only when the additional complexity is intentional
