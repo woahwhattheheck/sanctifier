@@ -6,4 +6,4 @@ expression: findings
   severity: Info
   message: "Soroban contract 'MissingMetadata' does not declare contractmeta! discoverability metadata"
   location: "MissingMetadata:4"
-  suggestion: "Add a contractmeta! entry with concise public metadata (for example a Description) so explorers and tooling can identify the contract."
+  suggestion: Add a contractmeta! entry with concise public metadata (for example a Description) so explorers and tooling can identify the contract.
