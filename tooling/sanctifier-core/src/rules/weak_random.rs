@@ -166,22 +166,43 @@ impl<'ast> Visit<'ast> for WeakRandomVisitor {
     }
 
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
-        if matches!(node.op, syn::BinOp::RemAssign(_)) {
+        let is_compound_assign = matches!(
+            node.op,
+            syn::BinOp::AddAssign(_)
+                | syn::BinOp::SubAssign(_)
+                | syn::BinOp::MulAssign(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+                | syn::BinOp::BitXorAssign(_)
+                | syn::BinOp::BitAndAssign(_)
+                | syn::BinOp::BitOrAssign(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        );
+
+        if is_compound_assign {
             if let Some(name) = path_ident(&node.left) {
+                // Compound assignment derives its new value from both the old
+                // left-hand value and the RHS. Preserve or introduce taint for
+                // every compound operator, but only remainder-assignment proves
+                // the result is a reduced index.
                 let is_tainted = self.tainted.contains(&name)
                     || expr_is_tainted(&node.right, &self.tainted);
+                let is_reduced =
+                    is_tainted && matches!(node.op, syn::BinOp::RemAssign(_));
+
+                self.tainted.remove(&name);
+                self.reduced.remove(&name);
                 if is_tainted {
                     self.tainted.insert(name.clone());
+                }
+                if is_reduced {
                     self.reduced.insert(name);
-                } else {
-                    self.tainted.remove(&name);
-                    self.reduced.remove(&name);
                 }
             }
         }
         visit::visit_expr_binary(self, node);
     }
-
     fn visit_expr_index(&mut self, node: &'ast syn::ExprIndex) {
         if expr_is_reduced(&node.index, &self.tainted, &self.reduced) {
             self.report(node.span().start().line);
@@ -370,6 +391,21 @@ fn choose(env: Env, players: Vec<u64>) -> u64 {
         assert_eq!(findings[0].rule_name, FINDING_CODE);
     }
 
+    #[test]
+    fn compound_assignment_propagates_new_ledger_taint() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>, reveal: u64) -> u64 {
+    let mut idx = reveal;
+    idx ^= env.ledger().sequence() as u64;
+    idx %= players.len() as u64;
+    players[idx as usize]
+}
+"#;
+
+        let findings = WeakRandomRule::new().check(source);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_name, FINDING_CODE);
+    }
     #[test]
     fn clean_reassignment_clears_previous_ledger_taint() {
         let source = r#"
