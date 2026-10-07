@@ -20,6 +20,13 @@ const CUSTOM_RULE_KEYS: &[&str] = &["name", "pattern", "severity"];
 /// configuration file is found, however, read/parse/validation failures are
 /// returned to the caller instead of being silently replaced by defaults.
 pub(crate) fn load_config(path: &Path) -> Result<SanctifyConfig> {
+    // Anchor relative spellings before ascending, preserving lexical path ancestry.
+    let path = std::path::absolute(path).with_context(|| {
+        format!(
+            "failed to resolve Sanctifier config search path {}",
+            path.display()
+        )
+    })?;
     let mut current = if path.is_file() {
         path.parent()
             .map(Path::to_path_buf)
