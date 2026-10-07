@@ -165,6 +165,23 @@ impl<'ast> Visit<'ast> for WeakRandomVisitor {
         visit::visit_expr_assign(self, node);
     }
 
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        if matches!(node.op, syn::BinOp::RemAssign(_)) {
+            if let Some(name) = path_ident(&node.left) {
+                let is_tainted = self.tainted.contains(&name)
+                    || expr_is_tainted(&node.right, &self.tainted);
+                if is_tainted {
+                    self.tainted.insert(name.clone());
+                    self.reduced.insert(name);
+                } else {
+                    self.tainted.remove(&name);
+                    self.reduced.remove(&name);
+                }
+            }
+        }
+        visit::visit_expr_binary(self, node);
+    }
+
     fn visit_expr_index(&mut self, node: &'ast syn::ExprIndex) {
         if expr_is_reduced(&node.index, &self.tainted, &self.reduced) {
             self.report(node.span().start().line);
@@ -337,6 +354,21 @@ fn is_selection_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remainder_assignment_marks_tainted_index_as_reduced() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>) -> u64 {
+    let mut idx = env.ledger().timestamp();
+    idx %= players.len() as u64;
+    players[idx as usize]
+}
+"#;
+
+        let findings = WeakRandomRule::new().check(source);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_name, FINDING_CODE);
+    }
 
     #[test]
     fn clean_reassignment_clears_previous_ledger_taint() {
