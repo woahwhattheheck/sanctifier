@@ -1,4 +1,5 @@
 use crate::rules::{Rule, RuleViolation, Severity};
+use std::collections::{HashMap, HashSet};
 use syn::{Fields, Item, Meta, Type};
 
 const DEFAULT_LEDGER_LIMIT_BYTES: usize = 64_000;
@@ -73,11 +74,14 @@ impl Rule for LedgerSizeRule {
 
         let mut violations = Vec::new();
         let strict_threshold = (self.ledger_limit as f64 * 0.5) as usize;
+        let contract_types = contract_type_index(&file);
 
         for item in &file.items {
             match item {
                 Item::Struct(s) if has_contracttype(&s.attrs) => {
-                    let size = self.estimate_struct_size(s);
+                    let mut visiting = HashSet::from([s.ident.to_string()]);
+                    let size =
+                        self.estimate_struct_size_with_types(s, &contract_types, &mut visiting);
                     if let Some(level) = self.classify_size(size, strict_threshold) {
                         let severity = match level {
                             SizeWarningLevel::ExceedsLimit => Severity::Error,
@@ -100,7 +104,9 @@ impl Rule for LedgerSizeRule {
                     }
                 }
                 Item::Enum(e) if has_contracttype(&e.attrs) => {
-                    let size = self.estimate_enum_size(e);
+                    let mut visiting = HashSet::from([e.ident.to_string()]);
+                    let size =
+                        self.estimate_enum_size_with_types(e, &contract_types, &mut visiting);
                     if let Some(level) = self.classify_size(size, strict_threshold) {
                         let severity = match level {
                             SizeWarningLevel::ExceedsLimit => Severity::Error,
@@ -155,6 +161,17 @@ impl LedgerSizeRule {
     }
 
     fn estimate_struct_size(&self, s: &syn::ItemStruct) -> usize {
+        let contract_types: HashMap<String, ContractTypeDef<'_>> = HashMap::new();
+        let mut visiting = HashSet::new();
+        self.estimate_struct_size_with_types(s, &contract_types, &mut visiting)
+    }
+
+    fn estimate_struct_size_with_types(
+        &self,
+        s: &syn::ItemStruct,
+        contract_types: &HashMap<String, ContractTypeDef<'_>>,
+        visiting: &mut HashSet<String>,
+    ) -> usize {
         match &s.fields {
             // Named #[contracttype] structs are encoded as ScVal::Map. Each
             // field therefore pays for the map framing plus a Symbol key and
@@ -169,19 +186,40 @@ impl LedgerSizeRule {
                         .unwrap_or(0);
                     total
                         .saturating_add(key)
-                        .saturating_add(self.estimate_type_size(&field.ty))
+                        .saturating_add(self.estimate_type_size_with_types(
+                            &field.ty,
+                            contract_types,
+                            visiting,
+                        ))
                 },
             ),
             // Tuple structs are encoded as ScVal::Vec.
             Fields::Unnamed(fields) => fields.unnamed.iter().fold(
                 SCVAL_CONTAINER_OVERHEAD_BYTES,
-                |total, field| total.saturating_add(self.estimate_type_size(&field.ty)),
+                |total, field| {
+                    total.saturating_add(self.estimate_type_size_with_types(
+                        &field.ty,
+                        contract_types,
+                        visiting,
+                    ))
+                },
             ),
             Fields::Unit => SCVAL_CONTAINER_OVERHEAD_BYTES,
         }
     }
 
     fn estimate_enum_size(&self, e: &syn::ItemEnum) -> usize {
+        let contract_types: HashMap<String, ContractTypeDef<'_>> = HashMap::new();
+        let mut visiting = HashSet::new();
+        self.estimate_enum_size_with_types(e, &contract_types, &mut visiting)
+    }
+
+    fn estimate_enum_size_with_types(
+        &self,
+        e: &syn::ItemEnum,
+        contract_types: &HashMap<String, ContractTypeDef<'_>>,
+        visiting: &mut HashSet<String>,
+    ) -> usize {
         // #[contracttype] enums are ScVal::Vec values whose first element is
         // the variant-name Symbol, followed by any tuple payload.
         let mut max_variant = 0usize;
@@ -190,14 +228,24 @@ impl LedgerSizeRule {
             match &variant.fields {
                 syn::Fields::Named(fields) => {
                     for field in &fields.named {
-                        variant_size = variant_size
-                            .saturating_add(self.estimate_type_size(&field.ty));
+                        variant_size = variant_size.saturating_add(
+                            self.estimate_type_size_with_types(
+                                &field.ty,
+                                contract_types,
+                                visiting,
+                            ),
+                        );
                     }
                 }
                 syn::Fields::Unnamed(fields) => {
                     for field in &fields.unnamed {
-                        variant_size = variant_size
-                            .saturating_add(self.estimate_type_size(&field.ty));
+                        variant_size = variant_size.saturating_add(
+                            self.estimate_type_size_with_types(
+                                &field.ty,
+                                contract_types,
+                                visiting,
+                            ),
+                        );
                     }
                 }
                 syn::Fields::Unit => {}
@@ -213,10 +261,22 @@ impl LedgerSizeRule {
     // lower-confidence growth floors.
     #[allow(clippy::only_used_in_recursion)]
     fn estimate_type_size(&self, ty: &Type) -> usize {
+        let contract_types: HashMap<String, ContractTypeDef<'_>> = HashMap::new();
+        let mut visiting = HashSet::new();
+        self.estimate_type_size_with_types(ty, &contract_types, &mut visiting)
+    }
+
+    fn estimate_type_size_with_types(
+        &self,
+        ty: &Type,
+        contract_types: &HashMap<String, ContractTypeDef<'_>>,
+        visiting: &mut HashSet<String>,
+    ) -> usize {
         match ty {
             Type::Path(tp) => {
                 if let Some(seg) = tp.path.segments.last() {
-                    match seg.ident.to_string().as_str() {
+                    let ident = seg.ident.to_string();
+                    match ident.as_str() {
                         // Soroban XDR has no u8/u16 scalar variants; SDK values
                         // widen these to a 32-bit ScVal representation.
                         "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "bool" => 8,
@@ -248,8 +308,13 @@ impl LedgerSizeRule {
                         "Vec" => {
                             if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                                 if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                                    return SCVAL_CONTAINER_OVERHEAD_BYTES
-                                        .saturating_add(self.estimate_type_size(inner));
+                                    return SCVAL_CONTAINER_OVERHEAD_BYTES.saturating_add(
+                                        self.estimate_type_size_with_types(
+                                            inner,
+                                            contract_types,
+                                            visiting,
+                                        ),
+                                    );
                                 }
                             }
                             SCVAL_CONTAINER_OVERHEAD_BYTES + DYNAMIC_PROXY_PAYLOAD_BYTES
@@ -261,7 +326,11 @@ impl LedgerSizeRule {
                                     .iter()
                                     .filter_map(|arg| {
                                         if let syn::GenericArgument::Type(inner) = arg {
-                                            Some(self.estimate_type_size(inner))
+                                            Some(self.estimate_type_size_with_types(
+                                                inner,
+                                                contract_types,
+                                                visiting,
+                                            ))
                                         } else {
                                             None
                                         }
@@ -277,13 +346,43 @@ impl LedgerSizeRule {
                         "Option" => {
                             if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                                 if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                                    return SCVAL_TAG_BYTES
-                                        .saturating_add(self.estimate_type_size(inner));
+                                    return SCVAL_TAG_BYTES.saturating_add(
+                                        self.estimate_type_size_with_types(
+                                            inner,
+                                            contract_types,
+                                            visiting,
+                                        ),
+                                    );
                                 }
                             }
                             SCVAL_TAG_BYTES + UNKNOWN_UDT_ESTIMATE_BYTES
                         }
-                        _ => UNKNOWN_UDT_ESTIMATE_BYTES,
+                        name => {
+                            if visiting.contains(name) {
+                                return UNKNOWN_UDT_ESTIMATE_BYTES;
+                            }
+                            let Some(definition) = contract_types.get(name) else {
+                                return UNKNOWN_UDT_ESTIMATE_BYTES;
+                            };
+
+                            visiting.insert(name.to_owned());
+                            let estimated = match definition {
+                                ContractTypeDef::Struct(item) => self
+                                    .estimate_struct_size_with_types(
+                                        item,
+                                        contract_types,
+                                        visiting,
+                                    ),
+                                ContractTypeDef::Enum(item) => self
+                                    .estimate_enum_size_with_types(
+                                        item,
+                                        contract_types,
+                                        visiting,
+                                    ),
+                            };
+                            visiting.remove(name);
+                            estimated
+                        }
                     }
                 } else {
                     UNKNOWN_UDT_ESTIMATE_BYTES
@@ -294,7 +393,11 @@ impl LedgerSizeRule {
                     if let syn::Lit::Int(lit) = &expr_lit.lit {
                         if let Ok(n) = lit.base10_parse::<usize>() {
                             return SCVAL_CONTAINER_OVERHEAD_BYTES.saturating_add(
-                                n.saturating_mul(self.estimate_type_size(&arr.elem)),
+                                n.saturating_mul(self.estimate_type_size_with_types(
+                                    &arr.elem,
+                                    contract_types,
+                                    visiting,
+                                )),
                             );
                         }
                     }
@@ -305,17 +408,49 @@ impl LedgerSizeRule {
                 tuple
                     .elems
                     .iter()
-                    .map(|elem| self.estimate_type_size(elem))
+                    .map(|elem| {
+                        self.estimate_type_size_with_types(elem, contract_types, visiting)
+                    })
                     .sum::<usize>(),
             ),
-            Type::Reference(reference) => self.estimate_type_size(&reference.elem),
-            Type::Paren(paren) => self.estimate_type_size(&paren.elem),
-            Type::Group(group) => self.estimate_type_size(&group.elem),
+            Type::Reference(reference) => self.estimate_type_size_with_types(
+                &reference.elem,
+                contract_types,
+                visiting,
+            ),
+            Type::Paren(paren) => {
+                self.estimate_type_size_with_types(&paren.elem, contract_types, visiting)
+            }
+            Type::Group(group) => {
+                self.estimate_type_size_with_types(&group.elem, contract_types, visiting)
+            }
             _ => UNKNOWN_UDT_ESTIMATE_BYTES,
         }
     }
 
 }
+
+enum ContractTypeDef<'a> {
+    Struct(&'a syn::ItemStruct),
+    Enum(&'a syn::ItemEnum),
+}
+
+fn contract_type_index(file: &syn::File) -> HashMap<String, ContractTypeDef<'_>> {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(item) if has_contracttype(&item.attrs) => Some((
+                item.ident.to_string(),
+                ContractTypeDef::Struct(item),
+            )),
+            Item::Enum(item) if has_contracttype(&item.attrs) => {
+                Some((item.ident.to_string(), ContractTypeDef::Enum(item)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 
 fn round_up_xdr_word(bytes: usize) -> usize {
     bytes.saturating_add(XDR_WORD_BYTES - 1) / XDR_WORD_BYTES * XDR_WORD_BYTES
@@ -383,6 +518,64 @@ mod tests {
         assert_eq!(rule.estimate_struct_size(&tuple), 32);
         // Vec framing + largest variant: Symbol("Failed") + u32.
         assert_eq!(rule.estimate_enum_size(&enum_ty), 36);
+    }
+
+    #[test]
+    fn same_file_contracttypes_resolve_nested_fixed_width_fields() {
+        let rule = LedgerSizeRule::new();
+        let file: syn::File = syn::parse_quote! {
+            #[contracttype]
+            pub struct Coordinates {
+                pub x: u64,
+                pub y: u64,
+            }
+
+            #[contracttype]
+            pub struct Position {
+                pub point: Coordinates,
+                pub active: bool,
+            }
+
+            #[contracttype]
+            pub struct CycleA {
+                pub b: CycleB,
+            }
+
+            #[contracttype]
+            pub struct CycleB {
+                pub a: CycleA,
+            }
+        };
+        let contract_types = contract_type_index(&file);
+
+        let position = match contract_types.get("Position") {
+            Some(ContractTypeDef::Struct(item)) => *item,
+            _ => panic!("Position contracttype missing"),
+        };
+        let mut visiting = HashSet::from(["Position".to_string()]);
+        assert_eq!(
+            rule.estimate_struct_size_with_types(
+                position,
+                &contract_types,
+                &mut visiting,
+            ),
+            112
+        );
+
+        let cycle_a = match contract_types.get("CycleA") {
+            Some(ContractTypeDef::Struct(item)) => *item,
+            _ => panic!("CycleA contracttype missing"),
+        };
+        let mut visiting = HashSet::from(["CycleA".to_string()]);
+        assert_eq!(
+            rule.estimate_struct_size_with_types(
+                cycle_a,
+                &contract_types,
+                &mut visiting,
+            ),
+            88,
+            "cyclic references should terminate at the documented UDT proxy"
+        );
     }
 
     #[test]
