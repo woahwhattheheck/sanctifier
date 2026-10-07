@@ -77,13 +77,14 @@ margin is applied first, so a type whose budgeted size crosses 80% is reported
 as `ApproachingLimit`, while a budgeted size at or above the limit is
 `ExceedsLimit`.
 
-**Dynamic-size limitation:** `Bytes`, `String`, `Symbol`, `Vec`, `Map`,
-and unresolved user-defined types cannot be given a finite upper bound from the
-type alone. For those cases the detector uses a documented representative
-payload/one-element growth floor. The +10% margin is **not** a universal upper
-error bound for runtime-sized collections. Pair this rule with
-[`unbounded_storage`](unbounded_storage.md) when collection growth is the
-risk.
+**Dynamic-size limitation:** `Bytes`, `String`, `Symbol`, `Vec`, and `Map`
+remain runtime-sized and use a representative payload/one-element growth floor.
+Same-file `#[contracttype]` structs and enums are now resolved recursively, so
+nested fixed-width fields contribute their calculated estimate. Unknown external
+types and cyclic references retain the 40-byte user-defined-type fallback.
+The +10% margin is **not** a universal upper error bound for runtime-sized
+collections. Pair this rule with [`unbounded_storage`](unbounded_storage.md)
+when collection growth is the risk.
 
 The golden `ledger_size` fixture uses `BytesN<4096>`, a contract-spec type
 supported by the pinned SDK, and verifies that a modest fixed byte payload stays
