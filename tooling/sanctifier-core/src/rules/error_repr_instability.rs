@@ -91,29 +91,36 @@ impl ErrorReprInstabilityRule {
 
             let enum_name = enum_item.ident.to_string();
             let mut next = Some(0u32);
-            let mut enum_variants = Vec::new();
-            let mut resolvable = true;
 
             for variant in &enum_item.variants {
                 let value = match &variant.discriminant {
-                    Some((_, expr)) => Self::explicit_u32(expr),
-                    None => next,
+                    Some((_, expr)) => {
+                        let explicit = Self::explicit_u32(expr);
+                        next = explicit.and_then(|value| value.checked_add(1));
+                        explicit
+                    }
+                    None => {
+                        let implicit = next;
+                        next = implicit.and_then(|value| value.checked_add(1));
+                        implicit
+                    }
                 };
+
+                // A non-literal explicit discriminant makes only itself and
+                // following implicit values unknowable. A later literal
+                // discriminant re-establishes the sequence, so keep capturing
+                // independently resolvable variants instead of dropping the
+                // whole enum.
                 let Some(value) = value else {
-                    resolvable = false;
-                    break;
+                    continue;
                 };
-                next = value.checked_add(1);
-                enum_variants.push(CapturedVariant {
+
+                captured.push(CapturedVariant {
                     enum_name: enum_name.clone(),
                     variant: variant.ident.to_string(),
                     discriminant: value,
                     line: variant.span().start().line,
                 });
-            }
-
-            if resolvable {
-                captured.extend(enum_variants);
             }
         }
 
@@ -228,5 +235,33 @@ mod tests {
         let baseline = capture_error_repr_baseline(old, "src/lib.rs");
         let rule = ErrorReprInstabilityRule::with_baseline("src/lib.rs", &baseline);
         assert!(rule.check(current).is_empty());
+    }
+
+    #[test]
+    fn non_literal_discriminant_does_not_hide_later_explicit_drift() {
+        let old = r#"
+            #[contracterror]
+            #[repr(u32)]
+            enum Error { A = 1, B = 2, C = 3, D = 4 }
+        "#;
+        let current = r#"
+            #[contracterror]
+            #[repr(u32)]
+            enum Error { A = SOME_CONST, B, C = 30, D }
+        "#;
+
+        let baseline = capture_error_repr_baseline(old, "src/lib.rs");
+        let rule = ErrorReprInstabilityRule::with_baseline("src/lib.rs", &baseline);
+        let findings = rule.check(current);
+
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().any(|finding| {
+            finding.message.contains("Error::C")
+                && finding.message.contains("from 3 to 30")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.message.contains("Error::D")
+                && finding.message.contains("from 4 to 31")
+        }));
     }
 }
