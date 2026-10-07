@@ -659,6 +659,13 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             );
         }
 
+        eprintln!(
+            "Timing: discovery={} ms, analysis={} ms, total={} ms",
+            discovery_ms,
+            analysis_ms,
+            total_started.elapsed().as_millis()
+        );
+
         if has_critical || has_high {
             std::process::exit(1);
         }
