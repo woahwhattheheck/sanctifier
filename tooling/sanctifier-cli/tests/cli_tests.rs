@@ -412,9 +412,9 @@ fn test_analyze_junit_outputs_machine_readable_xml() {
 
 #[test]
 fn test_analyze_junit_clean_scan_has_passing_case() {
-    let fixture_path = env::current_dir()
-        .unwrap()
-        .join("tests/fixtures/valid_contract.rs");
+    let temp_dir = tempdir().unwrap();
+    let fixture_path = temp_dir.path().join("clean_contract.rs");
+    fs::write(&fixture_path, "pub fn clean() {}\n").unwrap();
 
     let output = Command::cargo_bin("sanctifier")
         .unwrap()
