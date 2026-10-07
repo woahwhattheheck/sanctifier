@@ -125,11 +125,10 @@ fn read_effective_config(target_dir: &Path) -> SanctifyConfig {
 }
 
 pub fn exec(args: InitArgs, path: Option<PathBuf>) -> anyhow::Result<()> {
-    use std::env;
-
     let target_dir = match path {
         Some(p) => p,
-        None => env::current_dir()?,
+        // Match the relative finding paths used by the generated analyze . workflow.
+        None => PathBuf::from("."),
     };
 
     let result = (|| -> anyhow::Result<()> {
