@@ -15,6 +15,7 @@
 use sanctifier_core::rules::auth_gap::VisibilityLeakRule;
 use sanctifier_core::rules::auth_on_caller::AuthOnCallerRule;
 use sanctifier_core::rules::auth_replay::AuthReplayRule;
+use sanctifier_core::rules::missing_contractmeta::MissingContractmetaRule;
 use sanctifier_core::rules::{
     allowance_race::AllowanceRaceRule, arg_dos::ArgDosRule,
     arithmetic_overflow::ArithmeticOverflowRule, auth_gap::AuthGapRule,
@@ -203,6 +204,15 @@ fn snapshot_missing_ttl() {
         "missing_ttl",
         &MissingTtlRule::new(),
         include_str!("fixtures/detectors/missing_ttl.rs"),
+    );
+}
+
+#[test]
+fn snapshot_missing_contractmeta() {
+    assert_detector_snapshot(
+        "missing_contractmeta",
+        &MissingContractmetaRule::new(),
+        include_str!("fixtures/detectors/missing_contractmeta.rs"),
     );
 }
 

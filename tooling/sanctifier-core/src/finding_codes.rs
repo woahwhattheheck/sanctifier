@@ -41,6 +41,7 @@ pub const SEP41_APPROVAL_NO_EXPIRATION: &str = "SANCT_SEP41_APPROVAL_NO_EXPIRATI
 pub const NULLIFIER_GROWTH: &str = "SANCT_NULLIFIER_GROWTH";
 pub const PROOF_LENGTH_UNVALIDATED: &str = "SANCT_PROOF_LENGTH_UNVALIDATED";
 pub const PUBLIC_INPUT_UNVALIDATED: &str = "SANCT_PUBLIC_INPUT_UNVALIDATED";
+pub const MISSING_CONTRACTMETA: &str = "SANCT_MISSING_CONTRACTMETA";
 pub const AUTH_REPLAY: &str = "SANCT_AUTH_REPLAY";
 
 // ── Source-optional (compiled WASM) checks ────────────────────────────────────
@@ -282,6 +283,12 @@ pub fn all_finding_codes() -> Vec<FindingCode> {
             category: "zk_verification",
             description:
                 "Proof verification consumes public inputs without checking they are canonical field elements in range",
+        },
+        FindingCode {
+            code: MISSING_CONTRACTMETA,
+            category: "metadata",
+            description:
+                "Soroban contract root omits contractmeta! discoverability metadata",
         },
         FindingCode {
             code: WASM_NOT_SOROBAN,
