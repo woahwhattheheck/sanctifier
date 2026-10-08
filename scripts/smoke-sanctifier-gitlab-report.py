@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Focused GitLab Code Quality/SARIF smoke using the existing SEP-41 example.
 
---fixture runs converter-only, using a synthetic report shaped exactly like
-Sanctifier's analyze --format json output; it does not run the Rust scanner.
+--fixture runs converter-only, using a synthetic report in the schema of
+Sanctifier's analyze --format json output, including the location strings the
+CLI writes for each detector; it does not run the Rust scanner.
 Without --fixture, invoke an installed scanner against the real Soroban example.
 """
 from __future__ import annotations
@@ -25,14 +26,32 @@ def example_fixture() -> dict:
         "metadata": {"format": "sanctifier-ci-v1", "project_path": EXAMPLE},
         "findings": {
             "panic_issues": [
-                {"code": "S003", "function_name": "initialize",
+                {"code": "S002", "function_name": "initialize",
                  "issue_type": "panic!", "location": "src/lib.rs:63"},
-                {"code": "S003", "function_name": "initialize",
+                {"code": "S002", "function_name": "initialize",
                  "issue_type": "panic!", "location": "src/lib.rs:62"},
                 {"code": "TEST_BAD_LINE", "issue_type": "outside existing source",
                  "location": "src/lib.rs:2147483647"},
                 {"code": "TEST_BOOL_LINE", "issue_type": "boolean location",
                  "file": "src/lib.rs", "line": True},
+                # The CLI reports panics by function only, with no line.
+                {"code": "S002", "function_name": "initialize",
+                 "issue_type": "panic!", "location": f"{EXAMPLE}/src/lib.rs:initialize"},
+            ],
+            # Location strings exactly as `sanctifier analyze` writes them.
+            "arithmetic_issues": [
+                {"code": "S003", "function_name": "burn_from", "operation": "-",
+                 "suggestion": "Use .checked_sub(rhs) or .saturating_sub(rhs) to handle underflow",
+                 "location": f"{EXAMPLE}/src/lib.rs:burn_from:201"},
+            ],
+            "storage_collisions": [
+                {"code": "S005", "key_value": "admin", "key_type": "storage::set (persistent)",
+                 "location": f"{EXAMPLE}/src/lib.rs:storage-op:69",
+                 "message": "Potential persistent storage key collision: value 'admin' is also used in: storage-op (line 104)"},
+            ],
+            "unsafe_patterns": [
+                {"code": "S006", "pattern_type": "Panic", "line": 62,
+                 "snippet": f'{EXAMPLE}/src/lib.rs:panic ! ("already initialized")'},
             ],
             "ledger_size_warnings": [
                 {"code": "S004", "struct_name": "ExampleState",
@@ -135,11 +154,11 @@ def main() -> int:
                 if len(entry["fingerprint"]) != 64:
                     raise RuntimeError("Code Quality entry lacks stable SHA-256 fingerprint")
             if args.fixture:
-                if len(quality) != 2 or len(results) != 9:
+                if len(quality) != 5 or len(results) != 13:
                     raise RuntimeError("synthetic located/unlocated coverage changed")
                 located = [entry for entry in results if "locations" in entry]
-                if len(located) != 2:
-                    raise RuntimeError("synthetic fixture must produce two located SARIF results")
+                if len(located) != 5:
+                    raise RuntimeError("synthetic fixture must produce five located SARIF results")
                 located_uris = {
                     entry["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
                     for entry in located
@@ -159,8 +178,19 @@ def main() -> int:
                 if boundary_codes.intersection(entry["check_name"] for entry in quality):
                     raise RuntimeError("outside-checkout finding leaked into Code Quality")
 
+                # The CLI's <file>.rs:<function>:<line> locations and line
+                # fields with a <file>.rs: snippet must reach Code Quality.
+                for code, line in {"S003": 201, "S005": 69, "S006": 62}.items():
+                    lines = [entry["location"]["lines"]["begin"]
+                             for entry in quality if entry["check_name"] == code]
+                    if lines != [line]:
+                        raise RuntimeError(f"{code} must reach Code Quality once at line {line}, got {lines}")
+                # A panic reported by function name only has no line to annotate.
+                if sum(entry["ruleId"] == "S002" and "locations" not in entry for entry in results) != 1:
+                    raise RuntimeError("line-less S002 panic must remain one unlocated SARIF result")
+
                 fingerprints = {entry["fingerprint"] for entry in quality}
-                if len(fingerprints) != 2:
+                if len(fingerprints) != len(quality):
                     raise RuntimeError("duplicate semantic findings require distinct fingerprints")
 
                 # Shift only the source positions, not the finding identity.
@@ -176,11 +206,18 @@ def main() -> int:
                     {"code": "TEST_SYMLINK_ESCAPE", "issue_type": "escaping symlink",
                      "location": "src/escape.rs:1"},
                 ])
-                for entry in shifted_report["findings"]["panic_issues"]:
-                    if entry.get("location") == "src/lib.rs:63":
-                        entry["location"] = "src/lib.rs:61"
-                    elif entry.get("location") == "src/lib.rs:62":
-                        entry["location"] = "src/lib.rs:60"
+                shifts = {
+                    "src/lib.rs:63": "src/lib.rs:61",
+                    "src/lib.rs:62": "src/lib.rs:60",
+                    f"{EXAMPLE}/src/lib.rs:burn_from:201": f"{EXAMPLE}/src/lib.rs:burn_from:199",
+                    f"{EXAMPLE}/src/lib.rs:storage-op:69": f"{EXAMPLE}/src/lib.rs:storage-op:67",
+                }
+                for entries in shifted_report["findings"].values():
+                    for entry in entries:
+                        if entry.get("location") in shifts:
+                            entry["location"] = shifts[entry["location"]]
+                        elif entry.get("code") == "S006":
+                            entry["line"] -= 2
                 input_file.write_text(json.dumps(shifted_report), encoding="utf-8")
                 shifted_result = subprocess.run(
                     [sys.executable, str(CONVERTER), "--input", str(input_file),
