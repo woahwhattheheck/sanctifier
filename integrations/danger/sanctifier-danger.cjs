@@ -91,8 +91,12 @@ function reportSanctifierFindings(report, actions, options = {}) {
       ? options.changedFiles.map(f => String(f).replace(/\\/g, "/").replace(/^\.\//, ""))
       : []
   );
+  // Severity-first fanout: a stream of warnings must never hide a later
+  // critical/high finding behind the per-PR annotation budget.
+  const severityOrder = { fail: 0, warn: 1, message: 2 };
+  const ordered = [...findings].sort((a, b) => severityOrder[a.level] - severityOrder[b.level]);
   let posted = 0;
-  for (const item of findings) {
+  for (const item of ordered) {
     if (posted >= limit) break;
     const message = `Sanctifier ${item.text}`;
     const action = actions[item.level];
