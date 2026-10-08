@@ -55,8 +55,19 @@ struct ContractVisitor {
 }
 
 impl ContractVisitor {
-    fn inspect(&mut self, name: &str, line: usize, block: &syn::Block) {
+    fn inspect(&mut self, name: &str, line: usize, signature: &syn::Signature, block: &syn::Block) {
         let mut facts = EntryFacts::default();
+        // Soroban clients are often supplied by callers rather than constructed
+        // inside the entrypoint. Track typed parameters just like local clients.
+        for input in &signature.inputs {
+            if let syn::FnArg::Typed(arg) = input {
+                if is_client_type(&arg.ty) {
+                    if let syn::Pat::Ident(ident) = &*arg.pat {
+                        facts.client_vars.insert(ident.ident.to_string());
+                    }
+                }
+            }
+        }
         facts.visit_block(block);
         if !(is_value_moving(name) || facts.has_value_move) {
             return;
@@ -100,6 +111,7 @@ impl<'ast> Visit<'ast> for ContractVisitor {
             self.inspect(
                 &node.sig.ident.to_string(),
                 node.sig.ident.span().start().line,
+                &node.sig,
                 &node.block,
             );
         }
@@ -113,6 +125,7 @@ impl<'ast> Visit<'ast> for ContractVisitor {
             self.inspect(
                 &node.sig.ident.to_string(),
                 node.sig.ident.span().start().line,
+                &node.sig,
                 &node.block,
             );
         }
@@ -183,6 +196,20 @@ impl EntryFacts {
 fn is_guard_type(expr: &syn::Expr) -> bool {
     let tokens = expr.to_token_stream().to_string();
     tokens.contains("SanctifiedGuard") || tokens.contains("ReentrancyGuard")
+}
+
+fn is_client_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident.to_string().ends_with("Client")),
+        syn::Type::Reference(reference) => is_client_type(&reference.elem),
+        syn::Type::Paren(paren) => is_client_type(&paren.elem),
+        syn::Type::Group(group) => is_client_type(&group.elem),
+        _ => false,
+    }
 }
 
 fn is_client_constructor(expr: &syn::Expr) -> bool {
@@ -323,6 +350,31 @@ mod tests {
             }
         "#;
         assert!(MissingReentrancyGuardRule::new().check(src).is_empty());
+    }
+
+    #[test]
+    fn detects_value_transfer_from_borrowed_client_parameters() {
+        let src = r#"
+            impl Vault {
+                pub fn pay(client: &TokenClient, to: Address, amount: i128) {
+                    client.transfer(&to, &amount);
+                }
+            }
+        "#;
+        let findings = MissingReentrancyGuardRule::new().check(src);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].location.starts_with("pay:"));
+
+        // A similarly named method on a non-client parameter must not
+        // manufacture a cross-contract call or value-movement finding.
+        let non_client = r#"
+            impl Vault {
+                pub fn pay(store: &LocalStore, to: Address, amount: i128) {
+                    store.transfer(&to, &amount);
+                }
+            }
+        "#;
+        assert!(MissingReentrancyGuardRule::new().check(non_client).is_empty());
     }
 
     #[test]
