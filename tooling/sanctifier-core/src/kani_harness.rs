@@ -120,6 +120,7 @@ pub fn generate_kani_harnesses(source: &str, crate_name: &str) -> Result<String>
          #![cfg(kani)]\n\
          #![allow(unused_variables)]\n\n"
     );
+    output.push_str("use soroban_sdk::{Address, Bytes, BytesN, Env, String, Symbol, Vec};\n\n");
     if need_address {
         output.push_str(
             "fn kani_address(env: &soroban_sdk::Env) -> soroban_sdk::Address {\n\
