@@ -40,11 +40,8 @@ pub(crate) fn collect_rs_files(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if path.is_dir() {
-            if config.ignore_paths.iter().any(|p| name.contains(p.as_str()))
-                || config.directory_excluded(root, &path)
-            {
+            if config.directory_excluded(root, &path) {
                 continue;
             }
             collect_rs_files(&path, root, config, out);
