@@ -131,6 +131,7 @@ fn protect_source_from_baseline_overwrite(output: &str, sources: &[String]) -> R
         return Ok(());
     }
     let canonical_output = output.canonicalize()?;
+    #[cfg(unix)]
     let output_metadata = fs::metadata(&canonical_output)?;
     for input in sources {
         let canonical_source = Path::new(input).canonicalize()?;
