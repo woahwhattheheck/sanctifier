@@ -59,6 +59,16 @@ jobs:
           cargo build -p sanctifier-core --all-features
           cd tooling/sanctifier-cli && cargo build
 
+      - name: Gate heuristic cost regressions (#695)
+        # Focused per-function baseline comparison: no additional broad test suite.
+        run: |
+          cargo run --manifest-path tooling/sanctifier-cli/Cargo.toml \
+            --bin sanctifier-cost-gate -- check \
+            --root . \
+            --source contracts/vulnerable-contract/src/lib.rs \
+            --baseline contracts/vulnerable-contract/cost-baseline.json \
+            --max-regression-percent 10
+
       - name: CLI reference is up to date
         # Regenerates docs/cli.md from the clap command definitions and fails if
         # it differs from the committed copy, so the CLI reference can never drift
