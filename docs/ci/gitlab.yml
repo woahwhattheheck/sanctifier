@@ -1,0 +1,39 @@
+# Copy this job to your Soroban project's .gitlab-ci.yml.
+# Set SANCTIFIER_SCAN_PATH to the directory containing its Soroban Cargo.toml.
+# The helper is checked out with Sanctifier; no code is executed with secrets.
+stages:
+  - security
+
+sanctifier_security:
+  stage: security
+  image: rust:1.87-bookworm
+  variables:
+    SANCTIFIER_SCAN_PATH: "."
+    SANCTIFIER_REF: "main"
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends python3 git clang pkg-config libz3-dev ca-certificates
+    - git clone --depth 1 --branch "$SANCTIFIER_REF" https://github.com/Centurylong/sanctifier.git /tmp/sanctifier-ci
+    - cargo install --path /tmp/sanctifier-ci/tooling/sanctifier-cli --locked --root /tmp/sanctifier-installed
+  script:
+    - |
+      # Findings may make the scan return 1. Still convert/attach both reports
+      # and retain that status as the job result.
+      set +e
+      /tmp/sanctifier-installed/bin/sanctifier analyze "$SANCTIFIER_SCAN_PATH" --format json > sanctifier-report.json
+      scan_status=$?
+      set -e
+      python3 /tmp/sanctifier-ci/scripts/sanctifier-gitlab-report.py \
+        --input sanctifier-report.json \
+        --root "$CI_PROJECT_DIR" \
+        --codequality gl-code-quality-report.json \
+        --sarif sanctifier.sarif
+      exit "$scan_status"
+  artifacts:
+    when: always
+    expire_in: 7 days
+    reports:
+      codequality: gl-code-quality-report.json
+    paths:
+      - sanctifier-report.json
+      - gl-code-quality-report.json
+      - sanctifier.sarif
