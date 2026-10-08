@@ -116,7 +116,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         io::stdout().flush().ok();
     }
 
-    let mut config = load_config(path);
+    let mut config = load_config(path)?;
     let rule_pack = select_rule_pack(&config)?;
     config.ledger_limit = args.limit; // Apply CLI limit to config
     let analyzer = Analyzer::new(config);
@@ -889,7 +889,7 @@ fn chrono_timestamp() -> String {
     format!("{}", secs)
 }
 
-fn load_config(path: &Path) -> SanctifyConfig {
+fn load_config(path: &Path) -> anyhow::Result<SanctifyConfig> {
     let mut current = if path.is_file() {
         path.parent()
             .map(|p| p.to_path_buf())
@@ -901,17 +901,21 @@ fn load_config(path: &Path) -> SanctifyConfig {
     loop {
         let config_path = current.join(".sanctify.toml");
         if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(&config_path) {
-                if let Ok(config) = toml::from_str(&content) {
-                    return config;
-                }
-            }
+            // The nearest config wins. Falling back silently on invalid TOML
+            // could turn preset:minimal into a full/SMT scan without notice.
+            let content = fs::read_to_string(&config_path).map_err(|error| {
+                anyhow::anyhow!("Cannot read {}: {}", config_path.display(), error)
+            })?;
+            let config = toml::from_str::<SanctifyConfig>(&content).map_err(|error| {
+                anyhow::anyhow!("Invalid {}: {}", config_path.display(), error)
+            })?;
+            return Ok(config);
         }
         if !current.pop() {
             break;
         }
     }
-    SanctifyConfig::default()
+    Ok(SanctifyConfig::default())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1036,4 +1040,24 @@ fn is_soroban_project(path: &Path) -> bool {
         path.to_path_buf()
     };
     cargo_toml_path.exists()
+}
+
+#[cfg(test)]
+mod named_rule_pack_config_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_nearest_preset_config_fails_instead_of_silently_enabling_every_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join(".sanctify.toml");
+        fs::write(&config_file, "enabled_rules = [\"preset:minimal\"\n").unwrap();
+
+        let error = load_config(dir.path()).err().expect("invalid preset TOML must fail");
+        assert!(error.to_string().contains("Invalid "));
+        assert!(error.to_string().contains(".sanctify.toml"));
+
+        fs::write(&config_file, "enabled_rules = [\"preset:minimal\"]\n").unwrap();
+        let parsed = load_config(dir.path()).expect("valid nearest preset config");
+        assert_eq!(select_rule_pack(&parsed).unwrap(), Some(RulePack::Minimal));
+    }
 }
