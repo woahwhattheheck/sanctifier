@@ -28,6 +28,7 @@ pub const SANCT_UNWRAP: &str = "SANCT_UNWRAP";
 pub const INIT_HARDCODED_ADMIN: &str = "SANCT_INIT_HARDCODED_ADMIN";
 pub const SANCT_VISIBILITY: &str = "SANCT_VISIBILITY";
 pub const UNBOUNDED_STORAGE: &str = "SANCT_UNBOUNDED_STORAGE";
+pub const UNBOUNDED_LOOP: &str = "SANCT_UNBOUNDED_LOOP";
 pub const SANCT_VIEW_PANIC: &str = "SANCT_VIEW_PANIC";
 pub const ALLOWANCE_RACE: &str = "SANCT_ALLOWANCE_RACE";
 pub const STATE_WRITE_IN_VIEW: &str = "SANCT_STATE_WRITE_IN_VIEW";
@@ -211,6 +212,12 @@ pub fn all_finding_codes() -> Vec<FindingCode> {
                 "Persistent/instance storage collection grows via append/insert with no removal or length cap",
         },
         FindingCode {
+            code: UNBOUNDED_LOOP,
+            category: "denial_of_service",
+            description:
+                "Contract entrypoint loops over storage-sourced Vec/Map without an iteration cap or pagination",
+        },
+        FindingCode {
             code: SANCT_VIEW_PANIC,
             category: "panic_handling",
             description:
@@ -335,6 +342,7 @@ mod tests {
         assert!(codes.iter().any(|c| c.code == SANCT_VISIBILITY));
         assert!(codes.iter().any(|c| c.code == INIT_HARDCODED_ADMIN));
         assert!(codes.iter().any(|c| c.code == UNBOUNDED_STORAGE));
+        assert!(codes.iter().any(|c| c.code == UNBOUNDED_LOOP));
         assert!(codes.iter().any(|c| c.code == SANCT_VIEW_PANIC));
         assert!(codes.iter().any(|c| c.code == ALLOWANCE_RACE));
         assert!(codes.iter().any(|c| c.code == DIVISION_BY_ZERO));
