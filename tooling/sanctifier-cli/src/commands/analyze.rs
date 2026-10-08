@@ -1043,15 +1043,30 @@ fn write_csv_fields<W: Write>(writer: &mut W, fields: &[&str]) -> io::Result<()>
 }
 
 fn write_csv_field<W: Write>(writer: &mut W, field: &str) -> io::Result<()> {
+    // CSV quoting alone does not make spreadsheet cells containing formulas
+    // literal text. Findings may contain untrusted path or source metadata.
+    // Prefix formula-leading text with an apostrophe *inside* the quoted cell;
+    // the original finding remains available unmodified in details_json.
+    let first_visible = field
+        .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .chars()
+        .next();
+    let text_prefix = if matches!(first_visible, Some('=' | '+' | '-' | '@')) {
+        "'"
+    } else {
+        ""
+    };
     let needs_quotes = field
         .bytes()
         .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'));
 
     if !needs_quotes {
+        writer.write_all(text_prefix.as_bytes())?;
         return writer.write_all(field.as_bytes());
     }
 
     writer.write_all(b"\"")?;
+    writer.write_all(text_prefix.as_bytes())?;
     let escaped = field.replace('"', "\"\"");
     writer.write_all(escaped.as_bytes())?;
     writer.write_all(b"\"")
@@ -1073,6 +1088,37 @@ mod csv_tests {
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "plain,\"comma,value\",\"say \"\"hi\"\"\",\"line\nbreak\"\r\n"
+        );
+    }
+
+    #[test]
+    fn csv_formula_leading_cells_remain_text_with_valid_column_quoting() {
+        let mut output = Vec::new();
+        write_csv_fields(
+            &mut output,
+            &[
+                "=SUM(1,2)",
+                "  @function",
+                "\t+1",
+                "-2",
+                "safe",
+                r#"{"raw":"=1+1"}"#,
+            ],
+        )
+        .unwrap();
+
+        // The apostrophe is emitted inside a quoted field, not before it.
+        // JSON stays unmodified, retaining the original structured finding.
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            concat!(
+                "\"'=SUM(1,2)\",",
+                "'  @function,",
+                "'\t+1,",
+                "'-2,",
+                "safe,",
+                "\"{\"\"raw\"\":\"\"=1+1\"\"}\"\r\n"
+            )
         );
     }
 }
