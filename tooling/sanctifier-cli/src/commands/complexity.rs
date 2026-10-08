@@ -238,4 +238,24 @@ mod issue_696_regression {
         assert_eq!(metrics.functions.len(), 2);
         assert_eq!(metrics.functions[0].cyclomatic_complexity, 2);
     }
+
+    #[test]
+    fn deferred_closure_branches_do_not_inflate_enclosing_function_metrics() {
+        let source = r#"
+            pub fn outer() {
+                let deferred = || {
+                    if ready() {
+                        for _ in 0..3 { work(); }
+                    }
+                };
+                if enabled() { work(); }
+                let _ = deferred;
+            }
+        "#;
+        let parsed = syn::parse_file(source).unwrap();
+        let metrics = analyze_complexity(&parsed, "closures.rs");
+        let outer = metrics.functions.iter().find(|f| f.name == "outer").unwrap();
+        assert_eq!(outer.cyclomatic_complexity, 2);
+        assert_eq!(outer.max_nesting_depth, 1);
+    }
 }
