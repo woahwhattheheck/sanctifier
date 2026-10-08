@@ -36,6 +36,7 @@ New to Sanctifier and adding it to an existing project? Read in this order:
 - **[soroban-sdk Compatibility](soroban-sdk-compatibility.md)** — the supported
   soroban-sdk versions, the CI compatibility matrix, and version-specific
   handling (including the toolchain pin).
+- **[Bitbucket Code Insights](bitbucket-code-insights.md)** — run Sanctifier in Bitbucket Pipelines and publish real findings as PR annotations.
 - **[Source-Optional WASM Analysis](wasm-analysis.md)** — analyze a compiled
   `.wasm` module directly with `sanctifier wasm`, and its documented limitations
   vs. source mode.
