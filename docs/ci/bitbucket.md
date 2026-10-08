@@ -32,7 +32,7 @@ pipelines:
       - step:
           name: Sanctifier security findings
           script:
-            - apt-get update && apt-get install -y --no-install-recommends python3
+            - apt-get update && apt-get install -y --no-install-recommends python3 libz3-dev libdbus-1-dev pkg-config
             - cargo install --locked --git https://github.com/Centurylong/sanctifier sanctifier-cli
             - export SANCTIFIER_PROJECT_PATH="$(printenv SANCTIFIER_PROJECT_PATH || echo .)"
             - set +e
@@ -44,6 +44,8 @@ pipelines:
           artifacts:
             - sanctifier-report.json
 ~~~
+
+The install step includes native Z3, D-Bus, and `pkg-config` development prerequisites needed by Sanctifier's source build; Python alone is insufficient in the base Rust container.
 
 ## Authentication and API behavior
 
