@@ -177,8 +177,14 @@ fn classify_type(ty: &Type) -> Result<ArgumentKind> {
     if args.args.len() != 1 { bail!("expected a single generic type/length"); }
     let first = args.args.first().ok_or_else(|| anyhow!("missing generic"))?;
     match (name.as_str(), first) {
-        ("BytesN", GenericArgument::Const(n)) => {
+        ("BytesN", GenericArgument::Const(syn::Expr::Lit(expr))) => {
+            let syn::Lit::Int(n) = &expr.lit else {
+                bail!("BytesN length must be an integer literal");
+            };
             Ok(ArgumentKind::BytesN(n.to_token_stream().to_string()))
+        }
+        ("BytesN", GenericArgument::Const(_)) => {
+            bail!("BytesN length must be an integer literal in generated standalone harnesses")
         }
         ("Vec", GenericArgument::Type(ty)) => {
             Ok(ArgumentKind::Vec(ty.to_token_stream().to_string()))
@@ -224,5 +230,18 @@ mod tests {
     fn refuses_to_generate_a_noncompilable_unsupported_argument() {
         let source = "#[contractimpl] impl Vault { pub fn deposit(x: Option<Address>) {} }";
         assert!(generate_kani_harnesses(source, "vault").is_err());
+    }
+
+    #[test]
+    fn rejects_bytesn_lengths_that_are_not_self_contained_in_the_harness() {
+        let source = r#"
+            const TOKEN_BYTES: usize = 32;
+            #[contractimpl]
+            impl Vault {
+                pub fn store(value: BytesN<TOKEN_BYTES>) {}
+            }
+        "#;
+        let error = generate_kani_harnesses(source, "vault").unwrap_err();
+        assert!(format!("{error:#}").contains("BytesN length must be an integer literal"));
     }
 }
