@@ -66,3 +66,7 @@ The focused regression cases live alongside cei_violation.rs, including
 token::Client transfer and transfer_from, host invoke_contract, write-before-
 interaction safety, mutually exclusive branches, a local storage handle and
 loop labeling.
+The golden snapshot fixture
+`tooling/sanctifier-core/tests/fixtures/detectors/cei_violation.rs` pairs
+vulnerable SAC transfer, transfer_from and invoke_contract entrypoints with
+safe write-first, exclusive-branch and event-only counterparts.

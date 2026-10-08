@@ -64,13 +64,19 @@ impl CeiModel {
     }
 
     pub fn effects(&self) -> Vec<&CeiEvent> {
-        self.paths.iter().flat_map(|p| p.events.iter())
-            .filter(|event| event.kind == CeiKind::Effect).collect()
+        self.paths
+            .iter()
+            .flat_map(|p| p.events.iter())
+            .filter(|event| event.kind == CeiKind::Effect)
+            .collect()
     }
 
     pub fn interactions(&self) -> Vec<&CeiEvent> {
-        self.paths.iter().flat_map(|p| p.events.iter())
-            .filter(|event| event.kind == CeiKind::Interaction).collect()
+        self.paths
+            .iter()
+            .flat_map(|p| p.events.iter())
+            .filter(|event| event.kind == CeiKind::Interaction)
+            .collect()
     }
 }
 
@@ -95,7 +101,10 @@ impl ModelCollector {
         let mut bindings = Bindings::default();
         bindings.visit_block(block);
         let paths = analyze_block(block, vec![CeiPath::default()], &bindings);
-        self.models.push(CeiModel { function: name.into(), paths });
+        self.models.push(CeiModel {
+            function: name.into(),
+            paths,
+        });
     }
 }
 
@@ -140,10 +149,18 @@ fn client_constructor(expr: &Expr) -> bool {
     match expr {
         Expr::Call(call) => match &*call.func {
             Expr::Path(path) => {
-                let segments: Vec<String> = path.path.segments.iter()
-                    .map(|part| part.ident.to_string()).collect();
+                let segments: Vec<String> = path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|part| part.ident.to_string())
+                    .collect();
                 segments.last().is_some_and(|last| last == "new")
-                    && segments.iter().rev().skip(1).any(|part| part == "Client" || part.ends_with("Client"))
+                    && segments
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .any(|part| part == "Client" || part.ends_with("Client"))
             }
             _ => false,
         },
@@ -156,8 +173,7 @@ fn client_constructor(expr: &Expr) -> bool {
 
 fn binding_ident(expr: &Expr) -> Option<String> {
     match expr {
-        Expr::Path(p) if p.path.segments.len() == 1 =>
-            Some(p.path.segments[0].ident.to_string()),
+        Expr::Path(p) if p.path.segments.len() == 1 => Some(p.path.segments[0].ident.to_string()),
         Expr::Reference(e) => binding_ident(&e.expr),
         Expr::Paren(e) => binding_ident(&e.expr),
         Expr::Group(e) => binding_ident(&e.expr),
@@ -168,8 +184,10 @@ fn binding_ident(expr: &Expr) -> Option<String> {
 fn storage_handle(expr: &Expr, bindings: &Bindings) -> bool {
     match expr {
         Expr::MethodCall(call) => {
-            matches!(call.method.to_string().as_str(), "storage" | "persistent" | "temporary" | "instance")
-                || storage_handle(&call.receiver, bindings)
+            matches!(
+                call.method.to_string().as_str(),
+                "storage" | "persistent" | "temporary" | "instance"
+            ) || storage_handle(&call.receiver, bindings)
         }
         Expr::Reference(e) => storage_handle(&e.expr, bindings),
         Expr::Paren(e) => storage_handle(&e.expr, bindings),
@@ -185,7 +203,8 @@ fn client_receiver(expr: &Expr, bindings: &Bindings) -> bool {
     if let Some(name) = binding_ident(expr) {
         // Generated clients are often named *_client, sac or token. This
         // convention also captures arguments typed as a generated client.
-        return bindings.clients.contains(&name) || name.ends_with("_client")
+        return bindings.clients.contains(&name)
+            || name.ends_with("_client")
             || matches!(name.as_str(), "token" | "sac" | "token_client");
     }
     match expr {
@@ -206,8 +225,10 @@ fn classify_method(node: &syn::ExprMethodCall, bindings: &Bindings) -> Option<Ce
     } else if matches!(method.as_str(), "invoke_contract" | "try_invoke_contract") {
         CeiKind::Interaction
     } else if client_receiver(&node.receiver, bindings)
-        && !matches!(method.as_str(), "new" | "address" | "clone" | "clone_from"
-            | "env" | "contract_address")
+        && !matches!(
+            method.as_str(),
+            "new" | "address" | "clone" | "clone_from" | "env" | "contract_address"
+        )
     {
         // All generated Client methods issue a host call. In particular SAC
         // transfer/transfer_from, approve, burn and mint are interactions.
@@ -215,27 +236,50 @@ fn classify_method(node: &syn::ExprMethodCall, bindings: &Bindings) -> Option<Ce
     } else {
         return None;
     };
-    Some(CeiEvent { kind, operation: method, line: node.method.span().start().line })
+    Some(CeiEvent {
+        kind,
+        operation: method,
+        line: node.method.span().start().line,
+    })
 }
 
 fn classify_call(node: &syn::ExprCall) -> Option<CeiEvent> {
-    let Expr::Path(path) = &*node.func else { return None };
-    let parts: Vec<String> = path.path.segments.iter()
-        .map(|p| p.ident.to_string()).collect();
+    let Expr::Path(path) = &*node.func else {
+        return None;
+    };
+    let parts: Vec<String> = path
+        .path
+        .segments
+        .iter()
+        .map(|p| p.ident.to_string())
+        .collect();
     let last = parts.last()?;
     let lower = last.to_ascii_lowercase();
     // Known storage helper names, not unrelated arbitrary calls.
-    if matches!(lower.as_str(), "write_balance" | "save_balance" | "store_balance"
-        | "write_state" | "store_state" | "write_storage" | "save_storage")
-    {
-        return Some(CeiEvent { kind: CeiKind::Effect, operation: last.clone(),
-            line: node.span().start().line });
+    if matches!(
+        lower.as_str(),
+        "write_balance"
+            | "save_balance"
+            | "store_balance"
+            | "write_state"
+            | "store_state"
+            | "write_storage"
+            | "save_storage"
+    ) {
+        return Some(CeiEvent {
+            kind: CeiKind::Effect,
+            operation: last.clone(),
+            line: node.span().start().line,
+        });
     }
     if (last == "transfer" || last == "transfer_from")
         && parts.iter().any(|p| p == "Client" || p.ends_with("Client"))
     {
-        return Some(CeiEvent { kind: CeiKind::Interaction, operation: last.clone(),
-            line: node.span().start().line });
+        return Some(CeiEvent {
+            kind: CeiKind::Interaction,
+            operation: last.clone(),
+            line: node.span().start().line,
+        });
     }
     None
 }
@@ -309,22 +353,31 @@ fn inspect_expr(expr: &Expr, paths: Vec<CeiPath>, bindings: &Bindings) -> Vec<Ce
             } else {
                 paths
             };
-            result.into_iter().map(|mut path| {
-                path.terminated = true;
-                path
-            }).collect()
+            result
+                .into_iter()
+                .map(|mut path| {
+                    path.terminated = true;
+                    path
+                })
+                .collect()
         }
         Expr::Paren(node) => inspect_expr(&node.expr, paths, bindings),
         Expr::Group(node) => inspect_expr(&node.expr, paths, bindings),
         _ => {
-            let mut collector = Events { bindings, events: Vec::new() };
+            let mut collector = Events {
+                bindings,
+                events: Vec::new(),
+            };
             collector.visit_expr(expr);
-            paths.into_iter().map(|mut path| {
-                if !path.terminated {
-                    path.events.extend(collector.events.iter().cloned());
-                }
-                path
-            }).collect()
+            paths
+                .into_iter()
+                .map(|mut path| {
+                    if !path.terminated {
+                        path.events.extend(collector.events.iter().cloned());
+                    }
+                    path
+                })
+                .collect()
         }
     }
 }

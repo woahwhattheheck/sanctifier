@@ -8,15 +8,21 @@ use crate::rules::{Rule, RuleViolation, Severity};
 pub struct CeiViolationRule;
 
 impl CeiViolationRule {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for CeiViolationRule {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Rule for CeiViolationRule {
-    fn name(&self) -> &str { "cei_violation" }
+    fn name(&self) -> &str {
+        "cei_violation"
+    }
 
     fn description(&self) -> &str {
         "Detects cross-contract or token/SAC interactions before later storage writes"
@@ -44,7 +50,9 @@ impl Rule for CeiViolationRule {
             .collect()
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]
