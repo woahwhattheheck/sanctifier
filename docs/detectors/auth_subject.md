@@ -35,7 +35,7 @@ collects `require_auth` / `require_auth_for_args` subjects and recognizes
 direct storage `set` / `remove` / `update` and explicit helper calls named
 `debit`, `withdraw`, `debit_balance`, `burn_from`, `spend_from` and
 `set_balance`. An effect attributed to a storage-loaded owner is flagged
-only when no state owner resolves to an authenticated principal.
+when no state owner resolves to an authenticated principal. A storage-sourced **debit/withdraw/burn/remove** is also reported when its owner is unauthenticated, even if a different written account belongs to the signer. Ordinary recipient credits remain silent.
 
 Unknown address provenance is not treated as proof of a mismatch.
 The check is intraprocedural and conservative: renamed helpers, indirect
@@ -45,5 +45,5 @@ not proofs of a runtime exploit. Inspect the helper's behavior before
 treating it as a state mutation.
 
 Focused Rust regression cases are authored alongside the rule for
-storage-loaded victims, aliases, correct auth, normal transfer, and
-unknown or private flows; they are not a substitute for runtime tests.
+storage-loaded victims, aliases, correct auth, normal transfer,
+mixed victim-debit/attacker-credit, recipient credits, and unknown or private flows; they are not a substitute for runtime tests.
