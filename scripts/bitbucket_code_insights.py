@@ -23,6 +23,7 @@ MAX_ANNOTATIONS = 1000
 BATCH_SIZE = 100
 DEFAULT_SEVERITY = {
     "auth_gaps": "HIGH",
+    "vulnerability_db_matches": "HIGH",
     "storage_collisions": "HIGH",
     "smt_issues": "HIGH",
     "upgrade_risks": "HIGH",
@@ -77,6 +78,12 @@ def make_payload(report: dict, scan_root: Path, repo_root: Path, scan_exit: int)
     findings = report.get("findings")
     if not isinstance(findings, dict):
         raise ValueError("Expected Sanctifier analyze --format json findings object")
+    # CLI v1 serializes known-vulnerability matches at the report root,
+    # not inside the nested findings map. Preserve their real file:line.
+    root_matches = report.get("vulnerability_db_matches", [])
+    if isinstance(root_matches, list):
+        findings = dict(findings)
+        findings["vulnerability_db_matches"] = root_matches
     summary = report.get("summary")
     if not isinstance(summary, dict):
         raise ValueError("Expected Sanctifier summary object; refusing false PASS")
@@ -101,7 +108,8 @@ def make_payload(report: dict, scan_root: Path, repo_root: Path, scan_exit: int)
             if path_line is None:
                 continue  # still reflected in summary; never invent locations
             path, line = path_line
-            code = str(entry.get("code") or category)[:80]
+            code = str(entry.get("code") or entry.get("vuln_id")
+                       or category)[:80]
             message = finding_message(entry, category)
             severity = str(entry.get("severity") or DEFAULT_SEVERITY.get(
                 category, "MEDIUM")).upper()
