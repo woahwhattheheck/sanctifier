@@ -175,7 +175,7 @@ fn hardcoded_precision_binding(name: &str, expr: &syn::Expr) -> Option<u128> {
         return None;
     }
 
-    let value = integer_literal(expr)?;
+    let value = constant_integer_or_power(expr)?;
     let lower = name.to_ascii_lowercase();
 
     if lower.contains("decimal") || lower.contains("precision") {
@@ -240,8 +240,30 @@ fn integer_literal(expr: &syn::Expr) -> Option<u128> {
     }
 }
 
+// Evaluate only syntactically fixed, bounded decimal powers. Dynamic
+// asset.decimals() calls are not constants and must remain warning-free.
+fn constant_integer_or_power(expr: &syn::Expr) -> Option<u128> {
+    match expr {
+        syn::Expr::MethodCall(call)
+            if call.method == "pow" && call.args.len() == 1
+                && integer_literal(&call.receiver) == Some(10) =>
+        {
+            let exponent = u32::try_from(integer_literal(call.args.first()?)?).ok()?;
+            // 10^38 fits u128; never evaluate an unbounded supplied exponent.
+            if exponent > 38 {
+                return None;
+            }
+            10_u128.checked_pow(exponent)
+        }
+        syn::Expr::Paren(paren) => constant_integer_or_power(&paren.expr),
+        syn::Expr::Group(group) => constant_integer_or_power(&group.expr),
+        syn::Expr::Cast(cast) => constant_integer_or_power(&cast.expr),
+        _ => integer_literal(expr),
+    }
+}
+
 fn power_of_ten_literal(expr: &syn::Expr) -> Option<u128> {
-    let value = integer_literal(expr)?;
+    let value = constant_integer_or_power(expr)?;
     is_power_of_ten(value).then_some(value)
 }
 
@@ -360,4 +382,30 @@ fn contains_identifier_matching(
     };
     finder.visit_expr(expr);
     finder.found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_pow_scales_warn_but_dynamic_asset_precision_does_not() {
+        let source = r#"
+const TOKEN_SCALE: i128 = 10_i128.pow(7);
+fn display_balance(balance: i128, asset: TokenClient) -> i128 {
+    let bad = balance / 10_i128.pow(7);
+    let dynamic = balance / 10_i128.pow(asset.decimals());
+    bad + dynamic
+}
+"#;
+        let findings = HardcodedDecimalsRule::new().check(source);
+        // One fixed TOKEN_SCALE binding and one hardcoded conversion. The
+        // runtime asset.decimals()-derived conversion is intentionally safe.
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().any(|item| item.message.contains("10000000")));
+        assert!(findings.iter().any(|item| item.message.contains("TOKEN_SCALE")));
+
+        let too_large: syn::Expr = syn::parse_str("10_u128.pow(39)").unwrap();
+        assert!(constant_integer_or_power(&too_large).is_none());
+    }
 }
