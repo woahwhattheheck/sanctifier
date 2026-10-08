@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
-use z3::ast::{Ast, Int};
+use z3::ast::{Ast, Bool, Int};
 use z3::{Context, SatResult, Solver};
 
 /// Represents an invariant issue found by the SMT solver.
@@ -616,6 +616,225 @@ impl<'ctx> SmtProver<'ctx> {
                 counterexample: None,
                 duration_ms,
             },
+        }
+    }
+}
+
+// ── Symbolic token balance transition proofs (#343) ──────────────────────────
+
+/// An abstract token operation. The checked variants enforce the same
+/// authorization-independent arithmetic preconditions a token entrypoint must
+/// validate before changing balances. Unchecked variants intentionally omit
+/// the debit guard and should produce a concrete counterexample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenBalanceTransition {
+    CheckedTransfer,
+    CheckedMint,
+    CheckedBurn,
+    UncheckedTransfer,
+    UncheckedBurn,
+}
+
+impl TokenBalanceTransition {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "checked_transfer" => Some(Self::CheckedTransfer),
+            "checked_mint" => Some(Self::CheckedMint),
+            "checked_burn" => Some(Self::CheckedBurn),
+            "unchecked_transfer" => Some(Self::UncheckedTransfer),
+            "unchecked_burn" => Some(Self::UncheckedBurn),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CheckedTransfer => "checked_transfer",
+            Self::CheckedMint => "checked_mint",
+            Self::CheckedBurn => "checked_burn",
+            Self::UncheckedTransfer => "unchecked_transfer",
+            Self::UncheckedBurn => "unchecked_burn",
+        }
+    }
+}
+
+impl<'ctx> SmtProver<'ctx> {
+    /// Find a post-state with a negative sender, recipient or total supply.
+    ///
+    /// The two account balances, total supply and amount are independently
+    /// symbolic, with nonnegative bounded pre-state and supply covering both
+    /// observed accounts. Guards are asserted only for checked transitions.
+    /// Z3 UNSAT means the *modelled transition* preserves nonnegative balances
+    /// for all such inputs; SAT returns an actual violating assignment.
+    ///
+    /// This is a transition-model proof, NOT analysis of arbitrary contract
+    /// source or a statement about runtime integer overflow/authentication.
+    pub fn prove_balance_transition(&self, kind: TokenBalanceTransition) -> ProofResult {
+        let start = Instant::now();
+        let solver = Solver::new(self.ctx);
+        let zero = Int::from_i64(self.ctx, 0);
+        let max = Int::from_u64(self.ctx, u64::MAX);
+        let sender = Int::new_const(self.ctx, "sender_balance");
+        let receiver = Int::new_const(self.ctx, "receiver_balance");
+        let supply = Int::new_const(self.ctx, "total_supply");
+        let amount = Int::new_const(self.ctx, "amount");
+
+        for balance in [&sender, &receiver, &supply] {
+            solver.assert(&balance.ge(&zero));
+            solver.assert(&balance.le(&max));
+        }
+        solver.assert(&amount.gt(&zero));
+        solver.assert(&amount.le(&max));
+        // Other token holders may exist; the observed accounts cannot exceed supply.
+        solver.assert(&Int::add(self.ctx, &[&sender, &receiver]).le(&supply));
+
+        let transfer = matches!(
+            kind,
+            TokenBalanceTransition::CheckedTransfer | TokenBalanceTransition::UncheckedTransfer
+        );
+        let mint = kind == TokenBalanceTransition::CheckedMint;
+        let burn = matches!(
+            kind,
+            TokenBalanceTransition::CheckedBurn | TokenBalanceTransition::UncheckedBurn
+        );
+
+        let new_sender = if transfer || burn {
+            Int::sub(self.ctx, &[&sender, &amount])
+        } else {
+            sender.clone()
+        };
+        let new_receiver = if transfer || mint {
+            Int::add(self.ctx, &[&receiver, &amount])
+        } else {
+            receiver.clone()
+        };
+        let new_supply = if mint {
+            Int::add(self.ctx, &[&supply, &amount])
+        } else if burn {
+            Int::sub(self.ctx, &[&supply, &amount])
+        } else {
+            supply.clone()
+        };
+
+        if matches!(
+            kind,
+            TokenBalanceTransition::CheckedTransfer | TokenBalanceTransition::CheckedBurn
+        ) {
+            solver.assert(&amount.le(&sender));
+        }
+        if kind == TokenBalanceTransition::CheckedBurn {
+            solver.assert(&amount.le(&supply));
+        }
+        // Reject additions outside the modeled u64 range; Z3 Ints otherwise
+        // use mathematical integers, not wrapped machine arithmetic.
+        if transfer || mint {
+            solver.assert(&new_receiver.le(&max));
+        }
+        if mint {
+            solver.assert(&new_supply.le(&max));
+        }
+
+        let negative_sender = new_sender.lt(&zero);
+        let negative_receiver = new_receiver.lt(&zero);
+        let negative_supply = new_supply.lt(&zero);
+        solver.assert(&Bool::or(
+            self.ctx,
+            &[&negative_sender, &negative_receiver, &negative_supply],
+        ));
+
+        let status = solver.check();
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let invariant = format!("balance_non_negative_{}", kind.as_str());
+        match status {
+            SatResult::Unsat => ProofResult {
+                invariant,
+                status: ProofStatus::Proved,
+                message: format!(
+                    "{} preserves nonnegative sender, recipient and supply in the abstract Z3 model (UNSAT).",
+                    kind.as_str()
+                ),
+                counterexample: None,
+                duration_ms,
+            },
+            SatResult::Sat => {
+                let counterexample = solver.get_model().map(|model| {
+                    let eval = |expr: &Int<'ctx>| {
+                        model
+                            .eval(expr, true)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "<unavailable>".to_string())
+                    };
+                    let variables = vec![
+                        ("sender_balance".into(), eval(&sender)),
+                        ("receiver_balance".into(), eval(&receiver)),
+                        ("total_supply".into(), eval(&supply)),
+                        ("amount".into(), eval(&amount)),
+                        ("post_sender_balance".into(), eval(&new_sender)),
+                        ("post_receiver_balance".into(), eval(&new_receiver)),
+                        ("post_total_supply".into(), eval(&new_supply)),
+                    ];
+                    Counterexample {
+                        variables,
+                        violated_assertion:
+                            "post_sender >= 0 && post_receiver >= 0 && post_supply >= 0".into(),
+                        call_sequence: format!(
+                            "{}(sender={}, receiver={}, supply={}, amount={})",
+                            kind.as_str(),
+                            eval(&sender),
+                            eval(&receiver),
+                            eval(&supply),
+                            eval(&amount)
+                        ),
+                    }
+                });
+                ProofResult {
+                    invariant,
+                    status: ProofStatus::Violated,
+                    message: format!(
+                        "{} admits a negative post-state in the abstract Z3 model (SAT).",
+                        kind.as_str()
+                    ),
+                    counterexample,
+                    duration_ms,
+                }
+            }
+            SatResult::Unknown => ProofResult {
+                invariant,
+                status: ProofStatus::Unknown,
+                message: format!(
+                    "Z3 could not resolve the {} transition model within the configured budget.",
+                    kind.as_str()
+                ),
+                counterexample: None,
+                duration_ms,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod balance_transition_proofs {
+    use super::*;
+
+    #[test]
+    fn guarded_transitions_prove_and_missing_debit_guard_has_witness() {
+        let cfg = configured_z3_config(DEFAULT_Z3_TIMEOUT_MS);
+        let ctx = Context::new(&cfg);
+        let prover = SmtProver::new(&ctx);
+        for kind in [
+            TokenBalanceTransition::CheckedTransfer,
+            TokenBalanceTransition::CheckedMint,
+            TokenBalanceTransition::CheckedBurn,
+        ] {
+            assert_eq!(prover.prove_balance_transition(kind).status, ProofStatus::Proved);
+        }
+        for kind in [
+            TokenBalanceTransition::UncheckedTransfer,
+            TokenBalanceTransition::UncheckedBurn,
+        ] {
+            let result = prover.prove_balance_transition(kind);
+            assert_eq!(result.status, ProofStatus::Violated);
+            assert!(result.counterexample.is_some());
         }
     }
 }
