@@ -98,6 +98,55 @@ mod tests {
     }
 
     #[test]
+    fn nested_helpers_do_not_inflate_enclosing_function_complexity() {
+        let source = r#"
+            pub fn outer(value: i32) -> i32 {
+                fn helper(value: i32) -> i32 {
+                    if value > 0 { return 1; }
+                    if value > 1 { return 2; }
+                    if value > 2 { return 3; }
+                    0
+                }
+                if value > 0 { helper(value) } else { 0 }
+            }
+
+            struct Contract;
+            impl Contract {
+                pub fn method(value: i32) -> i32 {
+                    fn helper(value: i32) -> i32 {
+                        if value > 0 { return 1; }
+                        if value > 1 { return 2; }
+                        0
+                    }
+                    if value > 0 { helper(value) } else { 0 }
+                }
+            }
+
+            pub fn closure_control(value: i32) -> i32 {
+                let choose = || if value > 0 { 1 } else { 0 };
+                choose()
+            }
+        "#;
+        let ast = syn::parse_file(source).unwrap();
+        let metrics = analyze_complexity(&ast, "");
+        let complexity = |name: &str| {
+            metrics
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap()
+                .cyclomatic_complexity
+        };
+
+        assert_eq!(complexity("outer"), 2);
+        assert_eq!(complexity("method"), 2);
+        assert_eq!(complexity("closure_control"), 3);
+        let findings = CyclomaticComplexityRule::with_threshold(2).check(source);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].location, "closure_control");
+    }
+
+    #[test]
     fn malformed_source_is_ignored() {
         assert!(CyclomaticComplexityRule::new()
             .check("pub fn broken(")

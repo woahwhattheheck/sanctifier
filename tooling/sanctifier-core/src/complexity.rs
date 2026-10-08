@@ -68,6 +68,10 @@ impl FnComplexityVisitor {
 }
 
 impl<'ast> Visit<'ast> for FnComplexityVisitor {
+    fn visit_item_fn(&mut self, _: &'ast ItemFn) {
+        // Nested functions have independent control flow.
+    }
+
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.cyclomatic += 1;
         self.enter();
