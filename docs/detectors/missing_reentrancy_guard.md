@@ -55,7 +55,7 @@ The source-level, intraprocedural rule parses Rust with `syn` and examines publi
 1. The entrypoint name suggests a value transfer (such as `withdraw`, `redeem`, `mint`, or `swap`) **or** its body has a token-client `transfer`, `transfer_from`, `mint`, `burn`, `swap`, `send`, or `payout` method; and
 2. A `env.invoke_contract(..)` or recognized `*Client` method call occurs while no recognized guard is active.
 
-The visitor recognizes `SanctifiedGuard` and `ReentrancyGuard` constructor/entry patterns, and explicit `enter`/`try_enter`/`acquire` versus `exit`/`release`/`unlock`. It reports the first unguarded external-call line per affected function.
+The visitor recognizes `SanctifiedGuard` and `ReentrancyGuard` constructor/entry patterns, explicit `enter`/`try_enter`/`acquire` versus `exit`/`release`/`unlock`, and `drop(guard)`/`std::mem::drop(guard)`/`core::mem::drop(guard)` when exactly one tracked RAII guard exists. Dropping only a reference (`drop(&guard)`) does not release it. Declarations of unused local functions/impls are not scanned as though they execute in the outer entrypoint. It reports the first unguarded external-call line per affected function.
 
 ### When it does not fire
 
