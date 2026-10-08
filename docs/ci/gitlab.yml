@@ -1,23 +1,26 @@
-# Copy this job to your Soroban project's .gitlab-ci.yml.
-# Set SANCTIFIER_SCAN_PATH to the directory containing its Soroban Cargo.toml.
-# The helper is checked out with Sanctifier; no code is executed with secrets.
+# Copy this job into a Soroban project's .gitlab-ci.yml or include it locally.
+# Set SANCTIFIER_SCAN_PATH to the directory with its Soroban Cargo.toml.
+# Pin SANCTIFIER_REF to a reviewed release when deploying beyond the trial.
 stages:
   - security
 
 sanctifier_security:
   stage: security
-  image: rust:1.87-bookworm
+  # Match Sanctifier's existing CI toolchain. Newer rustc versions currently
+  # expose a transitive ethnum compatibility issue noted in the main CI.
+  image: rust:1.85-bookworm
   variables:
     SANCTIFIER_SCAN_PATH: "."
+    SANCTIFIER_SOURCE_URL: "https://github.com/Centurylong/sanctifier.git"
     SANCTIFIER_REF: "main"
   before_script:
-    - apt-get update -qq && apt-get install -y --no-install-recommends python3 git clang pkg-config libz3-dev ca-certificates
-    - git clone --depth 1 --branch "$SANCTIFIER_REF" https://github.com/Centurylong/sanctifier.git /tmp/sanctifier-ci
+    - apt-get update -qq && apt-get install -y --no-install-recommends python3 git clang pkg-config libz3-dev libdbus-1-dev ca-certificates
+    - git clone --depth 1 --branch "$SANCTIFIER_REF" "$SANCTIFIER_SOURCE_URL" /tmp/sanctifier-ci
     - cargo install --path /tmp/sanctifier-ci/tooling/sanctifier-cli --locked --root /tmp/sanctifier-installed
   script:
     - |
-      # Findings may make the scan return 1. Still convert/attach both reports
-      # and retain that status as the job result.
+      # Preserve the analyzer finding status, but convert and publish both
+      # reports even when vulnerabilities cause an exit code of 1.
       set +e
       /tmp/sanctifier-installed/bin/sanctifier analyze "$SANCTIFIER_SCAN_PATH" --format json > sanctifier-report.json
       scan_status=$?
