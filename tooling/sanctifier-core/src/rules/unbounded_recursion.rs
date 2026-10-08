@@ -136,13 +136,13 @@ struct RecursionFacts<'a> {
 }
 
 impl RecursionFacts<'_> {
-    fn record_guard(&mut self, condition: &Expr) {
+    fn comparison_guards(&self, condition: &Expr) -> HashSet<String> {
         let mut collector = GuardCollector {
             depth_params: self.depth_params,
             guarded: HashSet::new(),
         };
         collector.visit_expr(condition);
-        self.guarded_depth_params.extend(collector.guarded);
+        collector.guarded
     }
 
     fn record_recursive_args(
@@ -171,13 +171,39 @@ impl<'ast> Visit<'ast> for RecursionFacts<'_> {
     }
 
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
-        self.record_guard(&node.cond);
-        visit::visit_expr_if(self, node);
+        // Evaluating a comparison does not make the remainder of the
+        // function bounded. It constrains a recursive call only while the
+        // call is under that branch, or after a branch that returns.
+        self.visit_expr(&node.cond);
+        let local_guards = self.comparison_guards(&node.cond);
+        let earlier_guards = self.guarded_depth_params.clone();
+
+        self.guarded_depth_params.extend(local_guards.iter().cloned());
+        self.visit_block(&node.then_branch);
+        self.guarded_depth_params = earlier_guards.clone();
+
+        if let Some((_, else_expr)) = &node.else_branch {
+            self.guarded_depth_params.extend(local_guards.iter().cloned());
+            self.visit_expr(else_expr);
+            self.guarded_depth_params = earlier_guards;
+        }
+
+        // A comparison followed by a non-exiting branch (e.g. logging)
+        // cannot bound a later unconditional self-call.
+        if branch_exits_function(&node.then_branch) {
+            self.guarded_depth_params.extend(local_guards);
+        }
     }
 
     fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
-        self.record_guard(&node.cond);
-        visit::visit_expr_while(self, node);
+        self.visit_expr(&node.cond);
+        let local_guards = self.comparison_guards(&node.cond);
+        let earlier_guards = self.guarded_depth_params.clone();
+
+        self.guarded_depth_params.extend(local_guards);
+        self.visit_block(&node.body);
+        // The loop condition is not a guard for recursive calls after it.
+        self.guarded_depth_params = earlier_guards;
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
@@ -217,6 +243,15 @@ impl<'ast> Visit<'ast> for GuardCollector<'_> {
         }
         visit::visit_expr_binary(self, node);
     }
+}
+
+// Only a branch whose final statement returns prevents execution from
+// continuing on that path. Ordinary comparisons or logging are not bounds.
+fn branch_exits_function(block: &syn::Block) -> bool {
+    block.stmts.last().is_some_and(|stmt| match stmt {
+        syn::Stmt::Expr(expr, _) => matches!(peel(expr), Expr::Return(_)),
+        _ => false,
+    })
 }
 
 // Method-call arguments omit the self receiver, so index typed parameters
@@ -466,4 +501,61 @@ fn fully_bounded(depth: u32) {
             .collect();
         assert_eq!(names, vec!["mixed_calls", "wrong_argument"]);
     }
+    #[test]
+    fn unrelated_depth_checks_do_not_bound_later_recursive_calls() {
+        let source = r#"
+fn checked_but_not_stopped(depth: u32) {
+    if depth >= 8 {
+        let _message = "still running";
+    }
+    checked_but_not_stopped(depth + 1);
+}
+
+fn checked_in_loop_only(depth: u32) {
+    while depth >= 8 { break; }
+    checked_in_loop_only(depth + 1);
+}
+
+fn nested_nonterminal_check(depth: u32) {
+    if depth < 8 {
+        if depth >= 100 { return; }
+    }
+    nested_nonterminal_check(depth + 1);
+}
+
+fn recursive_only_under_bound(depth: u32) {
+    if depth < 8 {
+        recursive_only_under_bound(depth + 1);
+    }
+}
+
+fn terminating_guard(depth: u32) {
+    if depth >= 8 { return; }
+    terminating_guard(depth + 1);
+}
+
+fn terminating_guard_else(depth: u32) {
+    if depth >= 8 { return; } else {
+        terminating_guard_else(depth + 1);
+    }
+}
+"#;
+        syn::parse_str::<syn::File>(source).expect("valid guard-scope fixture");
+        let findings = UnboundedRecursionRule.check(source);
+        let names: Vec<_> = findings
+            .iter()
+            .map(|finding| finding.location.split_once(':').unwrap().0)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "checked_but_not_stopped",
+                "checked_in_loop_only",
+                "nested_nonterminal_check",
+            ],
+            "only comparisons that constrain the recursion path may bound it: {findings:#?}"
+        );
+    }
+
+
 }
