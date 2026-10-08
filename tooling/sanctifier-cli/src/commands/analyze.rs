@@ -214,19 +214,26 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         path.to_path_buf()
     };
 
+    // A corrupt/unreadable historical error-ABI baseline must not silently
+    // disable the very drift detector this scan promises to run.
     let stored_baseline = if args.no_baseline {
-        Ok(None)
+        None
     } else {
-        load_baseline(&project_root)
+        load_baseline(&project_root).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to load Sanctifier baseline {}: {error}",
+                project_root.join(".sanctify-baseline.json").display()
+            )
+        })?
     };
     let mut error_repr_findings = match &stored_baseline {
-        Ok(Some(baseline)) => collect_error_repr_findings(
+        Some(baseline) => collect_error_repr_findings(
             path,
             &project_root,
             &analyzer,
             &baseline.error_repr,
         )?,
-        _ => Vec::new(),
+        None => Vec::new(),
     };
 
     // ── Inline suppression ───────────────────────────────────────────────────
@@ -327,7 +334,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     // --no-baseline was not passed) and filter out pre-existing findings.
     let (suppressed_count, stale_entries) = if !args.no_baseline {
         match stored_baseline {
-            Ok(Some(ref bl)) => {
+            Some(ref bl) => {
                 use sanctifier_core::baseline::FlatFinding;
                 use std::collections::HashSet;
 
@@ -445,13 +452,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
 
                 (suppressed_count, stale_entries)
             }
-            Ok(None) => (0, vec![]),
-            Err(e) => {
-                if !is_json {
-                    eprintln!("{} Could not read baseline: {}", "⚠️".yellow(), e);
-                }
-                (0, vec![])
-            }
+            None => (0, vec![]),
         }
     } else {
         (0, vec![])
