@@ -26,7 +26,11 @@ def example_fixture() -> dict:
         "findings": {
             "panic_issues": [
                 {"code": "S003", "function_name": "initialize",
-                 "issue_type": "panic!", "location": "src/lib.rs:63"}
+                 "issue_type": "panic!", "location": "src/lib.rs:63"},
+                {"code": "TEST_BAD_LINE", "issue_type": "outside existing source",
+                 "location": "src/lib.rs:2147483647"},
+                {"code": "TEST_BOOL_LINE", "issue_type": "boolean location",
+                 "file": "src/lib.rs", "line": True},
             ],
             "ledger_size_warnings": [
                 {"code": "S004", "struct_name": "ExampleState",
@@ -95,7 +99,7 @@ def main() -> int:
                 if len(entry["fingerprint"]) != 64:
                     raise RuntimeError("Code Quality entry lacks stable SHA-256 fingerprint")
             if args.fixture:
-                if len(quality) != 1 or len(results) != 2:
+                if len(quality) != 1 or len(results) != 4:
                     raise RuntimeError("synthetic located/unlocated coverage changed")
                 if sum("locations" in entry for entry in results) != 1:
                     raise RuntimeError("synthetic fixture must produce exactly one located SARIF result")

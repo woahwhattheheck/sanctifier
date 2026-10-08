@@ -7,6 +7,7 @@ but are not assigned invented file/line positions in GitLab Code Quality.
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -65,6 +66,23 @@ def path_in_repo(raw: str, root: Path, scan_root: str) -> str | None:
     return None
 
 
+@lru_cache(maxsize=256)
+def source_line_count(path: Path) -> int:
+    """Read source lines once per file to avoid synthesizing impossible positions."""
+    with path.open("rb") as stream:
+        return sum(1 for _ in stream)
+
+
+def verified_line(root: Path, relative: str, line: object) -> bool:
+    """Booleans are not line numbers; the actual checked-out line must exist."""
+    if type(line) is not int or line <= 0:
+        return False
+    try:
+        return line <= source_line_count(root / relative)
+    except OSError:
+        return False
+
+
 def source_location(item: dict, root: Path, scan_root: str) -> tuple[str, int] | None:
     for field in ("location", "file", "snippet", "function"):
         value = item.get(field)
@@ -75,11 +93,11 @@ def source_location(item: dict, root: Path, scan_root: str) -> tuple[str, int] |
             path = path_in_repo(match["path"], root, scan_root)
             if path:
                 line = int(match["line"])
-                if line > 0:
+                if verified_line(root, path, line):
                     return path, line
-        if value.strip().endswith(".rs") and isinstance(item.get("line"), int):
+        if value.strip().endswith(".rs") and type(item.get("line")) is int:
             path = path_in_repo(value, root, scan_root)
-            if path and item["line"] > 0:
+            if path and verified_line(root, path, item["line"]):
                 return path, item["line"]
     return None
 

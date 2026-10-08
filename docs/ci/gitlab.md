@@ -28,7 +28,7 @@ Return to the upstream source and a reviewed release tag or maintained branch af
 
 ## Artifacts and failure behavior
 
-- gl-code-quality-report.json: registered with GitLab's native artifacts:reports:codequality integration; entries have real repo-relative .rs file paths, positive line numbers, stable SHA-256 fingerprints and GitLab severities.
+- gl-code-quality-report.json: registered with GitLab's native artifacts:reports:codequality integration; entries have actual repo-relative .rs file paths and in-file positive line numbers (not out-of-range or boolean positions), stable SHA-256 fingerprints and GitLab severities.
 - sanctifier.sarif: SARIF 2.1.0 under artifacts:paths for download/forwarding. GitLab does **not** automatically treat a SARIF file as its SAST report; use its SARIF-specific integrations if needed.
 - sanctifier-report.json: the original analyzer JSON, including any unlocated findings.
 
