@@ -1,0 +1,54 @@
+version: 2.1
+description: Run Sanctifier for Soroban contracts and upload the JSON findings report.
+display:
+  home_url: https://github.com/Centurylong/sanctifier
+  source_url: https://github.com/Centurylong/sanctifier
+
+commands:
+  analyze:
+    description: Install Sanctifier, analyze a Soroban contract and retain the findings report.
+    parameters:
+      path:
+        type: string
+        default: "."
+      artifacts_dir:
+        type: string
+        default: artifacts/sanctifier
+    steps:
+      - run:
+          name: Install Sanctifier
+          command: cargo install --locked --git https://github.com/Centurylong/sanctifier.git sanctifier-cli
+      - run:
+          name: Run Sanctifier analysis
+          environment:
+            SCAN_PATH: << parameters.path >>
+            REPORT_DIR: << parameters.artifacts_dir >>
+          command: |
+            mkdir -p "$REPORT_DIR"
+            scan_status=0
+            sanctifier analyze "$SCAN_PATH" --format json > "$REPORT_DIR/report.json" || scan_status=$?
+            echo "$scan_status" > "$REPORT_DIR/exit-code"
+      - store_artifacts:
+          path: << parameters.artifacts_dir >>
+          destination: sanctifier
+      - run:
+          name: Enforce scan result
+          environment:
+            REPORT_DIR: << parameters.artifacts_dir >>
+          command: |
+            scan_status=$(cat "$REPORT_DIR/exit-code")
+            exit "$scan_status"
+
+jobs:
+  scan:
+    description: Scan a Soroban contract and publish the security report.
+    docker:
+      - image: cimg/rust:1.85
+    parameters:
+      path:
+        type: string
+        default: "."
+    steps:
+      - checkout
+      - analyze:
+          path: << parameters.path >>
