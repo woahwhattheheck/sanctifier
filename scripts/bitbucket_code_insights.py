@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -202,20 +203,32 @@ def publish(report_payload: dict, annotations: list[dict]):
         req = urllib.request.Request(
             url, data=data, headers=headers, method=method
         )
-        try:
-            with opener.open(req, timeout=30) as response:
-                return response.status
-        except urllib.error.HTTPError as error:
-            if allow_missing and error.code == 404:
-                return 404
-            raise RuntimeError(
-                "Bitbucket Code Insights " + method + " failed: HTTP "
-                + str(error.code) + " " + str(error.reason)
-            ) from error
-        except urllib.error.URLError as error:
-            raise RuntimeError(
-                "Bitbucket Code Insights request failed: " + str(error.reason)
-            ) from error
+        # Bitbucket may temporarily throttle annotations during PR builds.
+        # Retry only recognized transient HTTP responses; never retry 401/403
+        # (credentials/scopes) or validation errors as if they were outages.
+        for attempt in range(3):
+            try:
+                with opener.open(req, timeout=30) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                if allow_missing and error.code == 404:
+                    return 404
+                if error.code in (429, 502, 503, 504) and attempt < 2:
+                    retry_after = error.headers.get("Retry-After", "")
+                    try:
+                        delay = min(30, max(1, int(retry_after)))
+                    except (ValueError, TypeError):
+                        delay = 2 ** (attempt + 1)
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(
+                    "Bitbucket Code Insights " + method + " failed: HTTP "
+                    + str(error.code) + " " + str(error.reason)
+                ) from error
+            except urllib.error.URLError as error:
+                raise RuntimeError(
+                    "Bitbucket Code Insights request failed: " + str(error.reason)
+                ) from error
 
     # Re-run against the same commit must not leave stale old annotations.
     # Deleting the report also clears its annotations; then republish both.
