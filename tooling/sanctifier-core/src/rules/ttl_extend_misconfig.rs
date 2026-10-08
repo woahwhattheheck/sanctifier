@@ -200,6 +200,32 @@ fn unsigned_primitive_cast(value: u128, ty: &syn::Type) -> Option<u128> {
     }
 }
 
+// A shift has the type of its LHS. Only explicit fixed-width unsigned
+// literal/cast operands prove a width here; other expression types stay dynamic.
+fn unsigned_shift_width(expr: &syn::Expr) -> Option<u32> {
+    let name = match unwrap(expr) {
+        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(n), .. }) => n.suffix(),
+        syn::Expr::Cast(c) => {
+            let syn::Type::Path(path) = c.ty.as_ref() else { return None };
+            if path.qself.is_some()
+                || path.path.leading_colon.is_some()
+                || path.path.segments.len() != 1
+            {
+                return None;
+            }
+            return match path.path.segments[0].ident.to_string().as_str() {
+                "u8" => Some(8), "u16" => Some(16), "u32" => Some(32),
+                "u64" => Some(64), "u128" => Some(128), _ => None,
+            };
+        }
+        _ => return None,
+    };
+    match name {
+        "u8" => Some(8), "u16" => Some(16), "u32" => Some(32),
+        "u64" => Some(64), "u128" => Some(128), _ => None,
+    }
+}
+
 fn const_u128(expr: &syn::Expr) -> Option<u128> {
     match unwrap(expr) {
         syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(n), .. }) => {
@@ -215,8 +241,16 @@ fn const_u128(expr: &syn::Expr) -> Option<u128> {
                 syn::BinOp::Mul(_) => left.checked_mul(right),
                 syn::BinOp::Div(_) if right != 0 => left.checked_div(right),
                 syn::BinOp::Rem(_) if right != 0 => left.checked_rem(right),
-                syn::BinOp::Shl(_) => u32::try_from(right).ok().and_then(|n| left.checked_shl(n)),
-                syn::BinOp::Shr(_) => u32::try_from(right).ok().and_then(|n| left.checked_shr(n)),
+                syn::BinOp::Shl(_) | syn::BinOp::Shr(_) => {
+                    let width = unsigned_shift_width(&b.left)?;
+                    let shift = u32::try_from(right).ok().filter(|&n| n < width)?;
+                    if matches!(&b.op, syn::BinOp::Shl(_)) {
+                        let mask = u128::MAX >> (128 - width);
+                        left.checked_shl(shift).map(|value| value & mask)
+                    } else {
+                        left.checked_shr(shift)
+                    }
+                }
                 syn::BinOp::BitAnd(_) => Some(left & right),
                 syn::BinOp::BitOr(_) => Some(left | right),
                 syn::BinOp::BitXor(_) => Some(left ^ right),
@@ -250,5 +284,35 @@ mod receiver_tests {
             }
         "#;
         assert!(TtlExtendMisconfigRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn typed_shifts_preserve_unsigned_lhs_width() {
+        let valid = r#"
+            fn literal_lhs(ctx: Env) {
+                ctx.storage().instance().extend_ttl((128u8 << 1) as u32, 100);
+            }
+            fn cast_lhs(ctx: Env) {
+                ctx.storage().instance().extend_ttl(((128 as u8) << 1) as u32, 100);
+            }
+        "#;
+        let findings = TtlExtendMisconfigRule::new().check(valid);
+        assert!(findings.is_empty(), "valid zero thresholds were widened: {findings:?}");
+
+        let inverted = r#"
+            fn renew(ctx: Env) {
+                ctx.storage().instance().extend_ttl((1u8 << 1) as u32, 1);
+            }
+        "#;
+        let findings = TtlExtendMisconfigRule::new().check(inverted);
+        assert_eq!(findings.len(), 1, "a genuine typed-shift inversion must still be reported");
+        assert!(findings[0].message.contains("threshold 2 >= extend_to 1"));
+
+        let narrowed_right_shift = syn::parse_str::<syn::Expr>("((300u16 as u8) >> 1) as u32").unwrap();
+        assert_eq!(const_u128(&narrowed_right_shift), Some(22));
+        for expression in ["1u8 << 8", "1u8 >> 8", "1 << 1", "1i8 << 1", "1usize << 1"] {
+            let expression = syn::parse_str::<syn::Expr>(expression).unwrap();
+            assert_eq!(const_u128(&expression), None, "unproven or out-of-range shift must stay dynamic");
+        }
     }
 }
