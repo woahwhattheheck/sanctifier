@@ -1,12 +1,12 @@
 use anyhow::Context as _;
 use clap::Args;
 use colored::*;
-use sanctifier_core::smt::{ProofResult, ProofStatus, SmtProver, TokenInvariant};
+use sanctifier_core::smt::{configured_z3_config, ProofResult, ProofStatus, SmtProver, TokenBalanceTransition, TokenInvariant, DEFAULT_Z3_TIMEOUT_MS};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use z3::{Config, Context};
+use z3::Context;
 
 #[derive(Args)]
 pub struct ProveArgs {
@@ -17,6 +17,11 @@ pub struct ProveArgs {
     /// Invariant to prove: balance_non_negative | supply_conserved | no_unauthorized_mint | all
     #[arg(long)]
     pub invariant: String,
+
+    /// Optional symbolic balance transition model: checked_transfer | checked_mint | checked_burn | unchecked_transfer | unchecked_burn.
+    /// Requires --invariant balance_non_negative. This models arithmetic, not contract source.
+    #[arg(long)]
+    pub balance_transition: Option<String>,
 
     /// Directory to write proof certificates (default: <path>/.sanctifier/proofs)
     #[arg(long)]
@@ -45,8 +50,19 @@ struct ProofCertificate {
 
 pub fn exec(args: ProveArgs) -> anyhow::Result<()> {
     let invariants = resolve_invariants(&args.invariant)?;
+    let transition = match args.balance_transition.as_deref() {
+        Some(value) => Some(TokenBalanceTransition::parse(value).ok_or_else(|| {
+            anyhow::anyhow!("Unknown balance transition '{value}'. Valid: checked_transfer, checked_mint, checked_burn, unchecked_transfer, unchecked_burn")
+        })?),
+        None => None,
+    };
+    if transition.is_some()
+        && (invariants.len() != 1 || invariants[0] != TokenInvariant::BalanceNonNegative)
+    {
+        anyhow::bail!("--balance-transition requires --invariant balance_non_negative");
+    }
 
-    let cfg = Config::new();
+    let cfg = configured_z3_config(DEFAULT_Z3_TIMEOUT_MS);
     let ctx = Context::new(&cfg);
     let prover = SmtProver::new(&ctx);
 
@@ -68,7 +84,10 @@ pub fn exec(args: ProveArgs) -> anyhow::Result<()> {
     let mut any_violated = false;
 
     for inv in &invariants {
-        let result = prover.prove_invariant(inv);
+        let result = match transition {
+            Some(kind) => prover.prove_balance_transition(kind),
+            None => prover.prove_invariant(inv),
+        };
 
         if result.status == ProofStatus::Violated {
             any_violated = true;
