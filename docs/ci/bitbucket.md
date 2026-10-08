@@ -73,7 +73,10 @@ raw JSON artifact. The UI only displays inline annotations on lines changed
 by the pull request; the full report remains available on the commit.
 
 The publisher refuses malformed/failed scanner documents and does not post a
-false green pass. HTTP failures also fail the pipeline. Critical/high findings
+false green pass. Code Insights HTTP 429/502/503/504 responses get at most two
+bounded retries (honoring numeric `Retry-After` values); authentication and
+other permanent API errors fail immediately, and persistent transient errors
+still fail the pipeline. Critical/high findings
 (or a nonzero scan exit code) result in FAILED; otherwise the report is PASSED.
 
 Atlassian references:
