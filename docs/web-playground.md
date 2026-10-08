@@ -13,7 +13,7 @@ Build requires Rust, the wasm32-unknown-unknown target, and wasm-pack.
 cd tooling/sanctifier-wasm
 rustup target add wasm32-unknown-unknown
 ./scripts/build-npm.sh
-./scripts/package-playground.sh
+bash ./scripts/package-playground.sh
 python3 -m http.server 8080 --directory dist/playground
 # Open http://localhost:8080/demo/
 ```
