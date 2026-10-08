@@ -122,6 +122,34 @@ fn regressions(baseline: &Baseline, current: &Baseline, percent: u64) -> Vec<Str
     failures
 }
 
+/// Refuse an update that would destroy an input Rust source file. Canonical
+/// paths catch relative/symlink aliases; Unix inode identity also catches
+/// hardlinks, which have different paths to the very same source bytes.
+fn protect_source_from_baseline_overwrite(output: &str, sources: &[String]) -> Result<()> {
+    let output = Path::new(output);
+    if !output.exists() {
+        return Ok(());
+    }
+    let canonical_output = output.canonicalize()?;
+    let output_metadata = fs::metadata(&canonical_output)?;
+    for input in sources {
+        let canonical_source = Path::new(input).canonicalize()?;
+        #[cfg(unix)]
+        let same_inode = {
+            use std::os::unix::fs::MetadataExt;
+            let source_metadata = fs::metadata(&canonical_source)?;
+            output_metadata.dev() == source_metadata.dev()
+                && output_metadata.ino() == source_metadata.ino()
+        };
+        #[cfg(not(unix))]
+        let same_inode = false;
+        if canonical_output == canonical_source || same_inode {
+            return Err(format!("baseline output aliases Rust source: {input}").into());
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<bool> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 || !matches!(args[0].as_str(), "update" | "check") {
@@ -129,6 +157,7 @@ fn run() -> Result<bool> {
     }
     if args[0] == "update" {
         let baseline = snapshot(&args[2..])?;
+        protect_source_from_baseline_overwrite(&args[1], &args[2..])?;
         let content = serde_json::to_string_pretty(&baseline)? + "\n";
         fs::write(&args[1], content)?;
         eprintln!(
@@ -178,6 +207,39 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[cfg(unix)]
+    #[test]
+    fn baseline_update_rejects_same_source_and_hardlink_aliases() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "sanctifier-cost-source-preservation-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("contract.rs");
+        let linked_output = directory.join("baseline.json");
+        let original = "pub fn untouched() {}\n";
+        fs::write(&source, original).unwrap();
+        fs::hard_link(&source, &linked_output).unwrap();
+
+        let sources = vec![source.to_string_lossy().into_owned()];
+        assert!(protect_source_from_baseline_overwrite(&sources[0], &sources).is_err());
+        assert!(protect_source_from_baseline_overwrite(
+            linked_output.to_str().unwrap(),
+            &sources
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(&source).unwrap(), original);
+
+        fs::remove_file(&linked_output).unwrap();
+        fs::remove_file(&source).unwrap();
+        fs::remove_dir(&directory).unwrap();
+    }
 
     #[test]
     fn maximum_valid_threshold_does_not_overflow() {
