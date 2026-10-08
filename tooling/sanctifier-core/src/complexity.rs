@@ -68,11 +68,37 @@ impl FnComplexityVisitor {
 }
 
 impl<'ast> Visit<'ast> for FnComplexityVisitor {
+    fn visit_stmt(&mut self, node: &'ast syn::Stmt) {
+        // A nested fn, impl or other item only declares future callables:
+        // these bodies do not run when the enclosing function is called.
+        // Count eligible nested functions independently in FileVisitor.
+        if matches!(node, syn::Stmt::Item(_)) {
+            return;
+        }
+        syn::visit::visit_stmt(self, node);
+    }
+
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.cyclomatic += 1;
+
+        // Rust represents `else if` as an ExprIf nested directly in the
+        // parent's else branch. It is another branch at the same source-level
+        // nesting, not a deeper block. Flatten only a direct else-if chain;
+        // an explicit `else { if ... }` still nests through the block visitor.
         self.enter();
-        syn::visit::visit_expr_if(self, node);
+        self.visit_expr(&node.cond);
+        self.visit_block(&node.then_branch);
         self.exit();
+
+        if let Some((_, else_branch)) = &node.else_branch {
+            if let syn::Expr::If(else_if) = else_branch.as_ref() {
+                self.visit_expr_if(else_if);
+            } else {
+                self.enter();
+                self.visit_expr(else_branch);
+                self.exit();
+            }
+        }
     }
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
         // Each arm beyond the first adds a branch
@@ -99,11 +125,11 @@ impl<'ast> Visit<'ast> for FnComplexityVisitor {
         syn::visit::visit_expr_loop(self, node);
         self.exit();
     }
-    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
-        self.cyclomatic += 1;
-        self.enter();
-        syn::visit::visit_expr_closure(self, node);
-        self.exit();
+    fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {
+        // A closure declares a separate callable: its branches only execute
+        // when invoked, not when the enclosing function constructs it.
+        // Report per named function without attributing deferred closure body
+        // branches or nesting to the enclosing function's complexity score.
     }
     // &&, || add logical branches
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {

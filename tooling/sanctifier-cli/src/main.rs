@@ -59,6 +59,8 @@ pub enum Commands {
         #[arg(short, long, default_value = "callgraph.dot")]
         output: PathBuf,
     },
+    /// Report per-function source complexity with configurable limits
+    Complexity(commands::complexity::ComplexityArgs),
     /// Run the Language Server Protocol server for real-time editor diagnostics
     Lsp {
         /// Communicate over stdin/stdout. Required, and currently the only
@@ -193,6 +195,9 @@ fn main() -> anyhow::Result<()> {
                 output,
                 edges.len()
             );
+        }
+        Commands::Complexity(args) => {
+            commands::complexity::exec(args)?;
         }
         Commands::Lsp { stdio } => {
             if !stdio {

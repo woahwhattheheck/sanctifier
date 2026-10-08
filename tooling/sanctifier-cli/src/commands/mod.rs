@@ -5,6 +5,7 @@ pub mod badge;
 pub mod baseline;
 pub mod check_public_inputs;
 pub mod ci;
+pub mod complexity;
 pub mod cve;
 pub mod diff;
 pub mod sbom;

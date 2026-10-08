@@ -20,6 +20,7 @@ This document contains the help content for the `sanctifier` command-line progra
 * [`sanctifier init`↴](#sanctifier-init)
 * [`sanctifier license`↴](#sanctifier-license)
 * [`sanctifier callgraph`↴](#sanctifier-callgraph)
+* [`sanctifier complexity`↴](#sanctifier-complexity)
 * [`sanctifier lsp`↴](#sanctifier-lsp)
 * [`sanctifier update`↴](#sanctifier-update)
 * [`sanctifier watch`↴](#sanctifier-watch)
@@ -59,6 +60,7 @@ Stellar Soroban Security & Formal Verification Suite
 * `init` — Initialize Sanctifier in a new project
 * `license` — Check dependency licenses (from `cargo metadata`) against an allow/deny list
 * `callgraph` — Generate a Graphviz DOT call graph of cross-contract calls (env.invoke_contract)
+* `complexity` — Report per-function source complexity with configurable limits
 * `lsp` — Run the Language Server Protocol server for real-time editor diagnostics
 * `update` — Check for and download the latest Sanctifier binary
 * `watch` — Watch source files and re-run analysis automatically on change (debounced)
@@ -330,6 +332,39 @@ Generate a Graphviz DOT call graph of cross-contract calls (env.invoke_contract)
 * `-o`, `--output <OUTPUT>` — Output DOT file path
 
   Default value: `callgraph.dot`
+
+
+
+## `sanctifier complexity`
+
+Report per-function source complexity with configurable limits
+
+**Usage:** `sanctifier complexity [OPTIONS] [PATH]`
+
+###### **Arguments:**
+
+* `<PATH>` — Rust source file or directory containing Rust sources
+
+  Default value: `.`
+
+###### **Options:**
+
+* `-f`, `--format <FORMAT>` — Output format (text or json)
+
+  Default value: `text`
+* `--max-cyclomatic <MAX_CYCLOMATIC>` — Maximum acceptable cyclomatic complexity per function
+
+  Default value: `10`
+* `--max-nesting <MAX_NESTING>` — Maximum acceptable function nesting depth
+
+  Default value: `4`
+* `--max-function-lines <MAX_FUNCTION_LINES>` — Maximum acceptable function length in source lines
+
+  Default value: `50`
+* `--max-params <MAX_PARAMS>` — Maximum acceptable number of parameters per function
+
+  Default value: `5`
+* `--fail-on-exceed` — Exit unsuccessfully if any function exceeds a configured limit
 
 
 
