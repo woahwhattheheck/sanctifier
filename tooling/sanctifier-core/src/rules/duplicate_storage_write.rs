@@ -9,9 +9,11 @@ use syn::Attribute;
 ///
 /// The rule is intentionally conservative. It reports only when two storage
 /// `set` calls target the same storage kind/key with the same stable value
-/// expression and no non-`set` statement occurs between them. Writing a new
-/// value, mutating a local first, or crossing a control-flow boundary is treated
-/// as an intentional update and is not reported.
+/// expression and no invalidating statement occurs between them. A write to a
+/// different-looking key in the same storage namespace may alias the earlier
+/// key, so it also invalidates the earlier candidate. Writing a new value,
+/// mutating a local first, or crossing a control-flow boundary is treated as
+/// an intentional update and is not reported.
 pub struct DuplicateStorageWriteRule;
 
 impl DuplicateStorageWriteRule {
@@ -146,6 +148,13 @@ fn analyze_direct_statements(
         };
 
         let target = (write.kind.to_string(), write.key.clone());
+        // Distinct key expressions can resolve to the same runtime Symbol.
+        // A write to a different-looking key in this storage namespace might
+        // overwrite the prior key, making a later restoration write necessary.
+        // Keep independent namespaces (instance/persistent/temporary) separate.
+        last_by_target.retain(|(kind, key), _| {
+            kind.as_str() != write.kind || key == &write.key
+        });
         if let Some(previous) = last_by_target.get(&target) {
             if previous.value == write.value {
                 violations.push(
@@ -415,6 +424,25 @@ mod tests {
         assert!(
             DuplicateStorageWriteRule::new().check(source).is_empty(),
             "a custom storage().persistent().set() chain must not be treated as Soroban storage"
+        );
+    }
+
+    #[test]
+    fn ignores_restore_after_potentially_aliasing_key_write() {
+        let source = r#"
+            impl Contract {
+                pub fn save(env: Env, left: Symbol, right: Symbol, first: i128, other: i128) {
+                    env.storage().persistent().set(&left, &first);
+                    env.storage().persistent().set(&right, &other);
+                    // right may equal left, so restoring first is essential.
+                    env.storage().persistent().set(&left, &first);
+                }
+            }
+        "#;
+
+        assert!(
+            DuplicateStorageWriteRule::new().check(source).is_empty(),
+            "different key expressions may alias; do not remove a needed restoration write"
         );
     }
 
