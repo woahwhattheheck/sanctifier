@@ -32,8 +32,12 @@ Pin to an immutable source commit for production configurations.
 ## Workflow behavior
 
 1. The reusable job checks out the consumer repository in `cimg/rust:1.85`.
-2. Its command installs the `sanctifier-cli` Rust binary from the official
-   project repository using Cargo's locked dependency graph.
+2. The job installs the default CLI's native build prerequisites (clang,
+   pkg-config, libz3-dev, libdbus-1-dev) in the Rust 1.85 Linux image, then
+   checks out the official Sanctifier source and installs the nested
+   `tooling/sanctifier-cli` Cargo workspace with its committed lockfile.
+   A source SHA pin is checked out before installation. A root-level
+   `cargo install --git` does not discover this separately nested workspace.
 3. The command runs `sanctifier analyze <path> --format json`. Its JSON output
    is written to `artifacts/sanctifier/report.json`; the original scan status
    is saved to `artifacts/sanctifier/exit-code`.
@@ -47,8 +51,9 @@ without it, Cargo installs the latest repository head. Override
 `artifacts_dir` to change where the report and status are stored.
 
 Reports are artifacts, not a covert bypass: a finding-triggered exit still
-fails the job *after* upload. A failed installation occurs before the scan
-and does not produce a report.
+fails the job *after* upload. A failed dependency installation, Git checkout,
+or Cargo install occurs before scanning and therefore cannot produce a
+meaningful report; it must not be reported as a successful scan.
 
 ## Copy-paste smoke example
 
