@@ -14,10 +14,21 @@ commands:
       artifacts_dir:
         type: string
         default: artifacts/sanctifier
+      git_revision:
+        type: string
+        default: ""
+        description: Optional immutable Sanctifier source commit SHA.
     steps:
       - run:
           name: Install Sanctifier
-          command: cargo install --locked --git https://github.com/Centurylong/sanctifier.git sanctifier-cli
+          environment:
+            SANCTIFIER_GIT_REVISION: << parameters.git_revision >>
+          command: |
+            if [ -n "$SANCTIFIER_GIT_REVISION" ]; then
+              cargo install --locked --git https://github.com/Centurylong/sanctifier.git --rev "$SANCTIFIER_GIT_REVISION" sanctifier-cli
+            else
+              cargo install --locked --git https://github.com/Centurylong/sanctifier.git sanctifier-cli
+            fi
       - run:
           name: Run Sanctifier analysis
           environment:
@@ -48,7 +59,15 @@ jobs:
       path:
         type: string
         default: "."
+      artifacts_dir:
+        type: string
+        default: artifacts/sanctifier
+      git_revision:
+        type: string
+        default: ""
     steps:
       - checkout
       - analyze:
           path: << parameters.path >>
+          artifacts_dir: << parameters.artifacts_dir >>
+          git_revision: << parameters.git_revision >>
