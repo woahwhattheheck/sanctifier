@@ -278,7 +278,12 @@ fn render_html_findings(out: &mut String, heading: &str, findings: &[TrendFindin
 }
 
 fn escape_markdown_cell(value: &str) -> String {
+    // Markdown tables may be rendered with inline HTML enabled. Treat finding
+    // path/context as untrusted text, not as executable HTML tags/entities.
     value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
         .replace('\\', "\\\\")
         .replace('|', "\\|")
         .replace('\n', "<br>")
@@ -540,7 +545,8 @@ mod tests {
 
         let markdown = trend.render_markdown();
         assert!(markdown.contains("| Added | 1 |"));
-        assert!(markdown.contains("left\\|right & <tag>"));
+        assert!(markdown.contains("left\\|right &amp; &lt;tag&gt;"));
+        assert!(markdown.contains("src/&lt;demo&gt;.rs:1"));
 
         let html = trend.render_html();
         assert!(html.contains("<tr><td>Added</td><td>1</td></tr>"));
