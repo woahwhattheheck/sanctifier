@@ -20,15 +20,27 @@ commands:
         description: Optional immutable Sanctifier source commit SHA.
     steps:
       - run:
+          name: Install Sanctifier build dependencies
+          command: |
+            # The default CLI links against system Z3 and DBus.
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends clang pkg-config libz3-dev libdbus-1-dev
+      - run:
           name: Install Sanctifier
           environment:
             SANCTIFIER_GIT_REVISION: << parameters.git_revision >>
           command: |
+            set -eu
+            # sanctifier-cli is its own nested Cargo workspace; installing a
+            # package from the repository root does not discover this binary.
+            source_dir=$(mktemp -d)
             if [ -n "$SANCTIFIER_GIT_REVISION" ]; then
-              cargo install --locked --git https://github.com/Centurylong/sanctifier.git --rev "$SANCTIFIER_GIT_REVISION" sanctifier-cli
+              git clone https://github.com/Centurylong/sanctifier.git "$source_dir"
+              git -C "$source_dir" checkout --detach "$SANCTIFIER_GIT_REVISION"
             else
-              cargo install --locked --git https://github.com/Centurylong/sanctifier.git sanctifier-cli
+              git clone --depth 1 https://github.com/Centurylong/sanctifier.git "$source_dir"
             fi
+            cargo install --locked --path "$source_dir/tooling/sanctifier-cli"
       - run:
           name: Run Sanctifier analysis
           environment:
