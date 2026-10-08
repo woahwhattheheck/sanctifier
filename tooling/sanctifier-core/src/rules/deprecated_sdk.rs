@@ -121,13 +121,15 @@ impl Rule for DeprecatedSdkRule {
 struct DeprecatedSdkVisitor {
     fn_name: String,
     env_bindings: HashSet<String>,
-    seen: HashSet<(usize, &'static str)>,
+    seen: HashSet<(usize, usize, &'static str)>,
     violations: Vec<RuleViolation>,
 }
 
 impl DeprecatedSdkVisitor {
-    fn record(&mut self, api: &'static DeprecatedApi, line: usize) {
-        if !self.seen.insert((line, api.display)) {
+    fn record(&mut self, api: &'static DeprecatedApi, line: usize, column: usize) {
+        // Independent deprecated calls may share one source line (including
+        // generated Rust). The source column distinguishes these occurrences.
+        if !self.seen.insert((line, column, api.display)) {
             return;
         }
         self.violations.push(
@@ -177,7 +179,7 @@ impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
                 ApiShape::AssociatedFn { .. } | ApiShape::Macro(_) => false,
             };
             if matched {
-                self.record(api, node.span().start().line);
+                self.record(api, node.span().start().line, node.span().start().column);
             }
         }
         syn::visit::visit_expr_method_call(self, node);
@@ -188,7 +190,7 @@ impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
             for api in DEPRECATED_APIS {
                 if let ApiShape::AssociatedFn { ty, function } = api.shape {
                     if path_ends_with(&path.path, ty, function) {
-                        self.record(api, node.span().start().line);
+                        self.record(api, node.span().start().line, node.span().start().column);
                     }
                 }
             }
@@ -201,7 +203,7 @@ impl<'ast> Visit<'ast> for DeprecatedSdkVisitor {
             for api in DEPRECATED_APIS {
                 if let ApiShape::Macro(macro_name) = api.shape {
                     if name == macro_name {
-                        self.record(api, node.span().start().line);
+                        self.record(api, node.span().start().line, node.span().start().column);
                     }
                 }
             }
@@ -277,4 +279,27 @@ fn path_ends_with(path: &syn::Path, ty: &str, function: &str) -> bool {
         (segments.next(), segments.next()),
         (Some(last), Some(prev)) if last.ident == function && prev.ident == ty
     )
+}
+
+
+#[cfg(test)]
+mod issue_682_same_line_regression {
+    use super::*;
+
+    #[test]
+    fn distinct_deprecated_calls_on_one_line_are_not_collapsed() {
+        let source = "pub fn repeated(env: Env) { env.logger(); env.logger(); }";
+        let findings = DeprecatedSdkRule::new().check(source);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|v| v.rule_name == FINDING_CODE));
+        assert!(findings.iter().all(|v| v.location.starts_with("repeated:")));
+    }
+
+    #[test]
+    fn distinct_deprecated_macros_on_one_line_are_not_collapsed() {
+        let source = "pub fn repeated(env: Env) { panic_error!(&env, E::A); panic_error!(&env, E::B); }";
+        let findings = DeprecatedSdkRule::new().check(source);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|v| v.rule_name == FINDING_CODE));
+    }
 }
