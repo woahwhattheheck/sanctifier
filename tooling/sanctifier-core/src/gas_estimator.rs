@@ -22,36 +22,56 @@ impl GasEstimator {
         Self {}
     }
 
+    /// Returns source-level instruction-weight proxies for public endpoints.
+    /// These weights are not measured Wasm CPU instructions or network fees.
     pub fn estimate_contract(&self, source: &str) -> Vec<GasEstimationReport> {
         let file = match parse_str::<File>(source) {
-            Ok(f) => f,
+            Ok(file) => file,
             Err(_) => return vec![],
         };
-
         let mut reports = Vec::new();
+        self.collect_public_functions(&file.items, "", &mut reports);
+        reports
+    }
 
-        for item in &file.items {
-            if let Item::Impl(i) = item {
-                for impl_item in &i.items {
-                    if let syn::ImplItem::Fn(f) = impl_item {
-                        // We only care about public functions
-                        if matches!(f.vis, syn::Visibility::Public(_)) {
-                            let mut visitor = GasEstimationVisitor::new(f.sig.ident.to_string());
-                            visitor.visit_impl_item_fn(f);
-
-                            reports.push(GasEstimationReport {
-                                function_name: visitor.function_name,
-                                estimated_instructions: visitor.instruction_count,
-                                estimated_memory_bytes: visitor.memory_bytes,
-                            });
+    fn collect_public_functions(
+        &self,
+        items: &[Item],
+        prefix: &str,
+        reports: &mut Vec<GasEstimationReport>,
+    ) {
+        for item in items {
+            match item {
+                Item::Fn(f) if matches!(f.vis, syn::Visibility::Public(_)) => {
+                    let mut visitor = GasEstimationVisitor::new(format!("{}{}", prefix, f.sig.ident));
+                    visitor.visit_item_fn(f);
+                    reports.push(visitor.into_report());
+                }
+                Item::Impl(i) => {
+                    let self_ty = &i.self_ty;
+                    let owner = quote::quote!(#self_ty).to_string().replace(' ', "");
+                    for impl_item in &i.items {
+                        if let syn::ImplItem::Fn(f) = impl_item {
+                            if matches!(f.vis, syn::Visibility::Public(_)) {
+                                let name = format!("{}{}::{}", prefix, owner, f.sig.ident);
+                                let mut visitor = GasEstimationVisitor::new(name);
+                                visitor.visit_impl_item_fn(f);
+                                reports.push(visitor.into_report());
+                            }
                         }
                     }
                 }
+                Item::Mod(module) => {
+                    if let Some((_, nested)) = &module.content {
+                        let nested_prefix = format!("{}{}::", prefix, module.ident);
+                        self.collect_public_functions(nested, &nested_prefix, reports);
+                    }
+                }
+                _ => {}
             }
         }
-
-        reports
     }
+
 }
 struct GasEstimationVisitor {
     function_name: String,
@@ -65,6 +85,14 @@ impl GasEstimationVisitor {
             function_name,
             instruction_count: 50, // Base cost for function entry
             memory_bytes: 32,      // Base stack usage
+        }
+    }
+
+    fn into_report(self) -> GasEstimationReport {
+        GasEstimationReport {
+            function_name: self.function_name,
+            estimated_instructions: self.instruction_count,
+            estimated_memory_bytes: self.memory_bytes,
         }
     }
 
@@ -172,5 +200,27 @@ impl<'ast> Visit<'ast> for GasEstimationVisitor {
             self.instruction_count += 10;
         }
         visit::visit_expr_macro(self, node);
+    }
+}
+
+#[cfg(test)]
+mod focused_tests {
+    use super::*;
+    #[test]
+    fn public_functions_include_nested_modules_but_not_helpers() {
+        let src = r#"
+            pub fn api(x: u32) -> u32 { x + 1 }
+            fn helper() {}
+            struct Contract;
+            impl Contract {
+                pub fn send(x: u32) -> u32 { x + 2 }
+                fn private() {}
+            }
+            mod nested { pub fn entry() { let x = 1 + 2; } }
+        "#;
+        let reports = GasEstimator::new().estimate_contract(src);
+        let names: Vec<&str> = reports.iter().map(|r| r.function_name.as_str()).collect();
+        assert_eq!(names, ["api", "Contract::send", "nested::entry"]);
+        assert!(reports.iter().all(|r| r.estimated_instructions >= 50));
     }
 }
