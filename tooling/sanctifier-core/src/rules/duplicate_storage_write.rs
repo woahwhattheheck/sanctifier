@@ -113,6 +113,25 @@ struct BlockVisitor<'a> {
     violations: &'a mut Vec<RuleViolation>,
 }
 
+impl BlockVisitor<'_> {
+    /// A nested function or impl method owns its own parameters and finding
+    /// label. Never reuse the enclosing function's Env names in its body.
+    fn visit_scoped_function(&mut self, sig: &syn::Signature, block: &syn::Block) {
+        let env_params = env_parameter_names(sig);
+        if env_params.is_empty() {
+            return;
+        }
+
+        let function_name = sig.ident.to_string();
+        let mut nested = BlockVisitor {
+            function_name: &function_name,
+            env_params: &env_params,
+            violations: &mut *self.violations,
+        };
+        nested.visit_block(block);
+    }
+}
+
 impl<'ast> Visit<'ast> for BlockVisitor<'_> {
     fn visit_block(&mut self, node: &'ast syn::Block) {
         analyze_direct_statements(
@@ -122,6 +141,14 @@ impl<'ast> Visit<'ast> for BlockVisitor<'_> {
             self.violations,
         );
         visit::visit_block(self, node);
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        self.visit_scoped_function(&node.sig, &node.block);
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.visit_scoped_function(&node.sig, &node.block);
     }
 }
 
@@ -443,6 +470,30 @@ mod tests {
         assert!(
             DuplicateStorageWriteRule::new().check(source).is_empty(),
             "different key expressions may alias; do not remove a needed restoration write"
+        );
+    }
+
+    #[test]
+    fn nested_functions_use_their_own_env_types_and_names() {
+        let source = r#"
+            fn outer(env: Env, key: Symbol, value: i128) {
+                fn cache_helper(env: Cache, key: Symbol, value: i128) {
+                    env.storage().persistent().set(&key, &value);
+                    env.storage().persistent().set(&key, &value);
+                }
+
+                fn nested(real_env: Env, key: Symbol, value: i128) {
+                    real_env.storage().persistent().set(&key, &value);
+                    real_env.storage().persistent().set(&key, &value);
+                }
+            }
+        "#;
+
+        let findings = DuplicateStorageWriteRule::new().check(source);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(
+            findings[0].location.starts_with("nested:"),
+            "the nested function must own its diagnostic label: {findings:#?}"
         );
     }
 
