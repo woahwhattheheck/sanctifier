@@ -2,7 +2,7 @@ use clap::Args;
 use colored::*;
 use sanctifier_core::{Analyzer, SanctifyConfig};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +25,10 @@ pub struct DiffArgs {
     /// Output format (text, json)
     #[arg(short, long, default_value = "text")]
     pub format: String,
+
+    /// Internal flag: --since only emits new findings, unlike the full diff command.
+    #[arg(skip)]
+    pub only_new: bool,
 
     /// Path to a custom vulnerability database JSON file
     #[arg(long)]
@@ -116,51 +120,15 @@ pub fn exec(args: DiffArgs) -> anyhow::Result<()> {
     // Analyze the ref
     let ref_findings = analyze_tree(ref_path, &args.vuln_db, is_json)?;
 
-    // Compute diff
-    let current_set: HashSet<FindingFingerprint> = current_findings.into_iter().collect();
-    let ref_set: HashSet<FindingFingerprint> = ref_findings.into_iter().collect();
-
-    let added: Vec<FindingSummary> = current_set
-        .difference(&ref_set)
-        .map(|f| FindingSummary {
-            code: f.code.clone(),
-            location: f.location.clone(),
-            message: f.message.clone(),
-            severity: infer_severity(&f.code),
-        })
-        .collect();
-
-    let removed: Vec<FindingSummary> = ref_set
-        .difference(&current_set)
-        .map(|f| FindingSummary {
-            code: f.code.clone(),
-            location: f.location.clone(),
-            message: f.message.clone(),
-            severity: infer_severity(&f.code),
-        })
-        .collect();
-
-    let persisting: Vec<FindingSummary> = current_set
-        .intersection(&ref_set)
-        .map(|f| FindingSummary {
-            code: f.code.clone(),
-            location: f.location.clone(),
-            message: f.message.clone(),
-            severity: infer_severity(&f.code),
-        })
-        .collect();
-
-    let report = DiffReport {
-        added: added.clone(),
-        removed: removed.clone(),
-        persisting: persisting.clone(),
-        summary: DiffSummary {
-            added_count: added.len(),
-            removed_count: removed.len(),
-            persisting_count: persisting.len(),
-            has_new_findings: !added.is_empty(),
-        },
-    };
+    // Compare stable finding identities instead of temp-worktree absolute paths
+    // or shifting source line numbers. Preserve duplicate occurrences by count.
+    let mut report = compare_findings(current_findings, ref_findings);
+    if args.only_new {
+        report.removed.clear();
+        report.persisting.clear();
+        report.summary.removed_count = 0;
+        report.summary.persisting_count = 0;
+    }
 
     // Output report
     if is_json {
@@ -170,11 +138,107 @@ pub fn exec(args: DiffArgs) -> anyhow::Result<()> {
     }
 
     // Exit with appropriate code
-    if args.fail_on_new && !added.is_empty() {
+    if args.fail_on_new && report.summary.has_new_findings {
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+// The source location contains a file path and often a line number. The
+// stable identity deliberately ignores the line while preserving the rule and
+// semantic message; an inserted line must not turn existing debt into a new
+// PR finding. A count-aware comparison still detects newly repeated issues.
+type StableKey = (String, String, String);
+
+fn stable_key(finding: &FindingFingerprint) -> StableKey {
+    let source = finding
+        .location
+        .split_once(':')
+        .map(|(file, _)| file)
+        .unwrap_or(&finding.location);
+    (
+        finding.code.clone(),
+        source.to_string(),
+        finding.message.clone(),
+    )
+}
+
+fn summary_of(finding: &FindingFingerprint) -> FindingSummary {
+    FindingSummary {
+        code: finding.code.clone(),
+        location: finding.location.clone(),
+        message: finding.message.clone(),
+        severity: infer_severity(&finding.code),
+    }
+}
+
+fn compare_findings(
+    current: Vec<FindingFingerprint>,
+    base: Vec<FindingFingerprint>,
+) -> DiffReport {
+    let mut current_groups: BTreeMap<StableKey, Vec<FindingFingerprint>> = BTreeMap::new();
+    let mut base_groups: BTreeMap<StableKey, Vec<FindingFingerprint>> = BTreeMap::new();
+    for finding in current {
+        current_groups
+            .entry(stable_key(&finding))
+            .or_default()
+            .push(finding);
+    }
+    for finding in base {
+        base_groups
+            .entry(stable_key(&finding))
+            .or_default()
+            .push(finding);
+    }
+
+    let keys: BTreeSet<StableKey> = current_groups
+        .keys()
+        .chain(base_groups.keys())
+        .cloned()
+        .collect();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut persisting = Vec::new();
+
+    for key in keys {
+        let mut current = current_groups.remove(&key).unwrap_or_default();
+        let mut base = base_groups.remove(&key).unwrap_or_default();
+        current.sort_by(|a, b| a.location.cmp(&b.location));
+        base.sort_by(|a, b| a.location.cmp(&b.location));
+        let inherited = current.len().min(base.len());
+        persisting.extend(current[..inherited].iter().map(summary_of));
+        added.extend(current[inherited..].iter().map(summary_of));
+        removed.extend(base[inherited..].iter().map(summary_of));
+    }
+
+    let sort = |items: &mut Vec<FindingSummary>| {
+        items.sort_by(|a, b| {
+            (&a.code, &a.location, &a.message).cmp(&(&b.code, &b.location, &b.message))
+        });
+    };
+    sort(&mut added);
+    sort(&mut removed);
+    sort(&mut persisting);
+
+    DiffReport {
+        summary: DiffSummary {
+            added_count: added.len(),
+            removed_count: removed.len(),
+            persisting_count: persisting.len(),
+            has_new_findings: !added.is_empty(),
+        },
+        added,
+        removed,
+        persisting,
+    }
+}
+
+fn normalized_file_path(file: &Path, root: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn analyze_tree(
@@ -191,11 +255,16 @@ fn analyze_tree(
     };
 
     let mut findings = Vec::new();
+    let root = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(Path::new("."))
+    };
 
     if path.is_dir() {
-        collect_findings_from_dir(path, &analyzer, &vuln_db, &mut findings)?;
+        collect_findings_from_dir(path, root, &analyzer, &vuln_db, &mut findings)?;
     } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-        collect_findings_from_file(path, &analyzer, &vuln_db, &mut findings)?;
+        collect_findings_from_file(path, root, &analyzer, &vuln_db, &mut findings)?;
     }
 
     Ok(findings)
@@ -203,6 +272,7 @@ fn analyze_tree(
 
 fn collect_findings_from_dir(
     dir: &Path,
+    root: &Path,
     analyzer: &Analyzer,
     vuln_db: &VulnDatabase,
     findings: &mut Vec<FindingFingerprint>,
@@ -220,9 +290,9 @@ fn collect_findings_from_dir(
             if is_ignored {
                 continue;
             }
-            collect_findings_from_dir(&path, analyzer, vuln_db, findings)?;
+            collect_findings_from_dir(&path, root, analyzer, vuln_db, findings)?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-            collect_findings_from_file(&path, analyzer, vuln_db, findings)?;
+            collect_findings_from_file(&path, root, analyzer, vuln_db, findings)?;
         }
     }
     Ok(())
@@ -230,12 +300,13 @@ fn collect_findings_from_dir(
 
 fn collect_findings_from_file(
     file: &Path,
+    root: &Path,
     analyzer: &Analyzer,
     vuln_db: &VulnDatabase,
     findings: &mut Vec<FindingFingerprint>,
 ) -> anyhow::Result<()> {
     if let Ok(content) = fs::read_to_string(file) {
-        let file_name = file.display().to_string();
+        let file_name = normalized_file_path(file, root);
 
         // Storage collisions
         for issue in analyzer.scan_storage_collisions(&content) {
@@ -538,5 +609,53 @@ impl Drop for DiffArgs {
             .arg("prune")
             .current_dir(&self.path)
             .output();
+    }
+}
+
+#[cfg(test)]
+mod stable_diff_tests {
+    use super::*;
+
+    fn finding(line: usize, message: &str) -> FindingFingerprint {
+        FindingFingerprint {
+            code: "PANIC_USAGE".to_string(),
+            location: format!("src/lib.rs:{}", line),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn moved_existing_and_new_repeated_findings_are_counted_deterministically() {
+        let base = vec![finding(10, "unwrap()"), finding(20, "panic!()")];
+        let current = vec![
+            finding(15, "unwrap()"),
+            finding(25, "panic!()"),
+            finding(26, "panic!()"),
+        ];
+        let result = compare_findings(current.clone(), base.clone());
+        assert_eq!(result.summary.added_count, 1);
+        assert_eq!(result.summary.persisting_count, 2);
+        assert_eq!(result.summary.removed_count, 0);
+        assert_eq!(result.added[0].location, "src/lib.rs:26");
+        assert_eq!(result.persisting[0].message, "panic!()");
+        let repeat = compare_findings(current, base);
+        assert_eq!(
+            serde_json::to_string(&result).unwrap(),
+            serde_json::to_string(&repeat).unwrap(),
+        );
+    }
+
+    #[test]
+    fn working_tree_and_temporary_checkout_share_relative_paths() {
+        assert_eq!(
+            normalized_file_path(
+                Path::new("/repo/src/lib.rs"),
+                Path::new("/repo")
+            ),
+            normalized_file_path(
+                Path::new("/tmp/git-checkout/src/lib.rs"),
+                Path::new("/tmp/git-checkout")
+            )
+        );
     }
 }
