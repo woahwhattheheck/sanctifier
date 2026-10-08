@@ -236,6 +236,25 @@ mod verification {
     /// A rejected Host authorization with a caller-supplied admin identity is
     /// a reachable witness against code which omits require_auth.
     /// Kani must find the failing assertion for this negative control.
+    /// Once a legitimate rotation succeeds, the former admin's signature
+    /// alone must not authorize a subsequent write, even when the Host
+    /// authenticates that former principal.
+    #[kani::proof]
+    fn verify_old_admin_is_revoked_after_rotation() {
+        let original: u64 = kani::any();
+        let replacement: u64 = kani::any();
+        let attempted_next: u64 = kani::any();
+        kani::assume(original != replacement);
+
+        let first = admin_write_pure(original, original, true, replacement);
+        assert!(first.wrote);
+        assert_eq!(first.admin, replacement);
+
+        let replay = admin_write_pure(first.admin, original, true, attempted_next);
+        assert!(!replay.wrote, "the former admin unexpectedly reached a write");
+        assert_eq!(replay.admin, replacement);
+    }
+
     #[kani::proof]
     #[kani::should_panic]
     fn verify_missing_require_auth_is_caught() {
@@ -469,6 +488,11 @@ mod tests {
             AdminWriteOutcome { admin: 99, wrote: true }
         );
         assert!(admin_write_missing_auth_bug(17, 17, 99).wrote);
+        // A valid signature from an administrator who has been replaced must
+        // not be enough to write the new administrator's storage.
+        let rotation = admin_write_pure(17, 17, true, 99);
+        let old_admin_replay = admin_write_pure(rotation.admin, 17, true, 23);
+        assert_eq!(old_admin_replay, AdminWriteOutcome { admin: 99, wrote: false });
     }
 
 
