@@ -47,7 +47,7 @@ All keys are optional. Omitted keys fall back to the defaults shown below.
 | Key | Type | Default | Applies to |
 |-----|------|---------|------------|
 | [`ignore_paths`](#ignore_paths) | array of strings | `["target", ".git"]` | `analyze`, `verify`, `callgraph` |
-| [`enabled_rules`](#enabled_rules) | array of strings | `["auth_gaps", "panics", "arithmetic", "ledger_size", "events"]` | `analyze` |
+| [`enabled_rules`](#enabled_rules) | detector families or a single `preset:<name>` selector | `["auth_gaps", "panics", "arithmetic", "ledger_size", "events"]` | `analyze` |
 | [`ledger_limit`](#ledger_limit) | integer (bytes) | `64000` | `analyze` |
 | [`approaching_threshold`](#approaching_threshold) | float (0.0–1.0) | `0.8` | `analyze` |
 | [`strict_mode`](#strict_mode) | boolean | `false` | `analyze` |
@@ -87,12 +87,35 @@ identifiers are:
 | `events` | Inconsistent event topic counts / gas patterns | `S008` |
 | `invariants` | Declared `#[sanctify::invariant]` checks (see [`verify`](cli.md#sanctifier-verify)) | `S011` |
 
-> **Behaviour note (read this):** the built-in analyzer currently runs its full
-> detector set regardless of this list — `enabled_rules` is **declarative
-> intent** that [`sanctifier init`](cli.md#sanctifier-init) writes and validates
-> (it must be non-empty), and is reserved for per-rule gating. If you need to
-> *guarantee* a rule runs today, [`custom_rules`](#custom_rules) always execute.
-> Do not rely on removing an entry here to disable a built-in detector.
+> **Compatibility:** the ordinary `enabled_rules` detector-family list is still
+> declarative. Without a preset, Sanctifier preserves its existing full scan.
+> To select a *working* rule pack, replace the entire list with one
+> `preset:<name>` selector. Mixing selectors with individual family names or
+> selecting an unknown preset returns an error and nonzero exit status.
+
+#### Named scan presets
+
+In the nearest `.sanctify.toml`, select:
+
+```toml
+enabled_rules = ["preset:recommended"]
+```
+
+| Selector | Detectors that actually execute |
+|----------|---------------------------------|
+| `preset:strict` | All current scanners: authorization gaps, panics, arithmetic, ledger size, storage collisions, unsafe patterns, custom regex rules, vulnerability database, events, unhandled results, upgrade/admin risk, and SMT invariants |
+| `preset:recommended` | The strict set **except SMT invariant verification**, which is computationally expensive |
+| `preset:minimal` | Authorization gaps, panics, arithmetic overflow, and ledger-entry size only |
+
+These presets control the scanner methods on both single `.rs` inputs and
+recursive project scans; findings are not merely filtered after execution.
+`minimal` intentionally skips custom regex and vulnerability-database scans.
+Choose `recommended` or `strict` when those detections matter.
+
+**Precedence:** the nearest configuration file wins; a single `preset:`
+selector determines analyzer membership. `analyze --limit` still overrides
+the ledger-size limit, and `ignore_paths` still excludes source directories.
+If no preset is selected, the complete previous analyzer behavior is preserved.
 
 ---
 
