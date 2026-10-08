@@ -45,7 +45,10 @@ impl OracleFunctionVisitor {
         let mut guards = FreshnessGuardVisitor { guarded: Vec::new() };
         guards.visit_block(block);
         for (var, line) in reads.reads {
-            if !uses.used.contains(&var) || guards.guarded.contains(&var) {
+            let first_use = uses.used.iter().filter(|(key, _)| key == &var)
+                .map(|(_, line)| *line).min();
+            let Some(first_use) = first_use else { continue; };
+            if guards.guarded.iter().any(|(key, line)| key == &var && *line < first_use) {
                 continue;
             }
             self.findings.push(
@@ -99,7 +102,7 @@ impl<'ast> Visit<'ast> for PriceReadVisitor {
 }
 
 struct PriceUseVisitor {
-    used: Vec<String>,
+    used: Vec<(String, usize)>,
 }
 impl<'ast> Visit<'ast> for PriceUseVisitor {
     fn visit_expr_field(&mut self, node: &'ast syn::ExprField) {
@@ -108,7 +111,7 @@ impl<'ast> Visit<'ast> for PriceUseVisitor {
         {
             if member == "price" {
                 if let Some(name) = p.path.get_ident() {
-                    self.used.push(name.to_string());
+                    self.used.push((name.to_string(), node.span().start().line));
                 }
             }
         }
@@ -117,7 +120,7 @@ impl<'ast> Visit<'ast> for PriceUseVisitor {
 }
 
 struct FreshnessGuardVisitor {
-    guarded: Vec<String>,
+    guarded: Vec<(String, usize)>,
 }
 impl<'ast> Visit<'ast> for FreshnessGuardVisitor {
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
@@ -126,19 +129,19 @@ impl<'ast> Visit<'ast> for FreshnessGuardVisitor {
         if [">", "<", ">=", "<="].iter().any(|c| cond.contains(c))
             && (action.contains("panic") || action.contains("return") || action.contains("assert"))
         {
-            mark_timestamp_guards(&cond, &mut self.guarded);
+            mark_timestamp_guards(&cond, &mut self.guarded, node.span().start().line);
         }
         visit::visit_expr_if(self, node);
     }
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
         let name = node.path.segments.last().map(|s| s.ident.to_string());
         if matches!(name.as_deref(), Some("assert" | "ensure")) {
-            mark_timestamp_guards(&node.tokens.to_string(), &mut self.guarded);
+            mark_timestamp_guards(&node.tokens.to_string(), &mut self.guarded, node.span().start().line);
         }
         visit::visit_macro(self, node);
     }
 }
-fn mark_timestamp_guards(tokens: &str, guarded: &mut Vec<String>) {
+fn mark_timestamp_guards(tokens: &str, guarded: &mut Vec<(String, usize)>, line: usize) {
     // Guard must tie the specific oracle response's timestamp to now/age.
     if !(tokens.contains("ledger") || tokens.contains("now") || tokens.contains("max_age")) {
         return;
@@ -146,7 +149,7 @@ fn mark_timestamp_guards(tokens: &str, guarded: &mut Vec<String>) {
     let pieces: Vec<&str> = tokens.split_whitespace().collect();
     for window in pieces.windows(3) {
         if window[1] == "." && window[2] == "timestamp" {
-            guarded.push(window[0].to_string());
+            guarded.push((window[0].to_string(), line));
         }
     }
 }
@@ -205,5 +208,22 @@ mod tests {
             }
         "#;
         assert!(OracleStaleRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn guard_after_price_use_does_not_make_consumption_safe() {
+        let source = r#"
+            impl Contract {
+                pub fn swap(env: Env, oracle: OracleClient, amount: i128, max_age: u64) -> i128 {
+                    let reading = oracle.last_price();
+                    let paid = amount * reading.price;
+                    if env.ledger().timestamp() - reading.timestamp > max_age {
+                        panic!("stale");
+                    }
+                    paid
+                }
+            }
+        "#;
+        assert_eq!(OracleStaleRule::new().check(source).len(), 1);
     }
 }
