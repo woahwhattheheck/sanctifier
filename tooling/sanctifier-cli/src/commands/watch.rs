@@ -62,6 +62,7 @@ pub fn exec_analyze(args: AnalyzeArgs) -> anyhow::Result<()> {
 fn watch_root(path: &Path) -> PathBuf {
     if path.is_file() {
         path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf()
     } else {
@@ -282,6 +283,17 @@ mod tests {
 
         assert_eq!(watch_root(&manifest), temp_dir.path());
         assert_eq!(watch_root(temp_dir.path()), temp_dir.path());
+    }
+
+    #[test]
+    fn relative_file_watch_uses_current_directory() {
+        let manifest = Path::new("Cargo.toml");
+        assert!(manifest.is_file(), "the CLI crate manifest is present");
+        assert_eq!(watch_root(manifest), PathBuf::from("."));
+
+        let nested_file = Path::new("src/main.rs");
+        assert!(nested_file.is_file(), "the CLI source file is present");
+        assert_eq!(watch_root(nested_file), PathBuf::from("src"));
     }
 
     #[test]
