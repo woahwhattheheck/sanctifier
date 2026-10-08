@@ -9,7 +9,7 @@ pipelines:
       - step:
           name: Sanctifier security findings
           script:
-            - apt-get update && apt-get install -y --no-install-recommends python3
+            - apt-get update && apt-get install -y --no-install-recommends python3 libz3-dev libdbus-1-dev pkg-config
             - cargo install --locked --git https://github.com/Centurylong/sanctifier sanctifier-cli
             - export SANCTIFIER_PROJECT_PATH="$(printenv SANCTIFIER_PROJECT_PATH || echo .)"
             - set +e
