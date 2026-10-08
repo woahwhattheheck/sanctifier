@@ -825,7 +825,10 @@ mod guarded_balance_transition_tests {
             .iter()
             .find(|(name, _)| name == "from_balance_after")
             .expect("model must contain resulting sender balance");
-        assert!(sender_after.1.starts_with('-'), "sender must be negative");
+        assert!(
+            sender_after.1.starts_with('-') || sender_after.1.starts_with("(- "),
+            "Z3 model must contain a negative sender balance"
+        );
     }
 }
 
