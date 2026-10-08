@@ -69,18 +69,47 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if not (REPO / EXAMPLE / "src" / "lib.rs").is_file():
+        example_source = REPO / EXAMPLE / "src" / "lib.rs"
+        if not example_source.is_file():
             raise RuntimeError(f"missing example project: {EXAMPLE}")
-        report = example_fixture() if args.fixture else scan_example(args.cli)
         with tempfile.TemporaryDirectory(prefix="sanctifier-gitlab-smoke-") as directory:
-            root = Path(directory)
-            input_file = root / "analyzer.json"
-            codequality_file = root / "codequality.json"
-            sarif_file = root / "report.sarif"
+            workspace = Path(directory)
+            report_root = REPO
+            if args.fixture:
+                # Run the synthetic fixture against an isolated checkout root so
+                # location validation cannot accidentally trust the real source
+                # repository outside the requested --root boundary.
+                report_root = workspace / "checkout"
+                fixture_source = report_root / EXAMPLE / "src" / "lib.rs"
+                fixture_source.parent.mkdir(parents=True, exist_ok=True)
+                fixture_source.write_bytes(example_source.read_bytes())
+
+                outside_source = workspace / "outside.rs"
+                outside_source.write_text("pub fn outside_checkout() {}\n", encoding="utf-8")
+                escaping_link = report_root / EXAMPLE / "src" / "escape.rs"
+                escaping_link.symlink_to(outside_source)
+
+                report = example_fixture()
+                report["findings"]["panic_issues"].extend([
+                    {"code": "TEST_MISSING_FILE", "issue_type": "missing source",
+                     "location": "src/missing.rs:1"},
+                    {"code": "TEST_TRAVERSAL", "issue_type": "parent traversal",
+                     "location": "../outside.rs:1"},
+                    {"code": "TEST_ABSOLUTE_OUTSIDE", "issue_type": "outside checkout",
+                     "file": str(outside_source), "line": 1},
+                    {"code": "TEST_SYMLINK_ESCAPE", "issue_type": "escaping symlink",
+                     "location": "src/escape.rs:1"},
+                ])
+            else:
+                report = scan_example(args.cli)
+
+            input_file = workspace / "analyzer.json"
+            codequality_file = workspace / "codequality.json"
+            sarif_file = workspace / "report.sarif"
             input_file.write_text(json.dumps(report), encoding="utf-8")
             converted = subprocess.run(
                 [sys.executable, str(CONVERTER), "--input", str(input_file),
-                 "--root", str(REPO), "--codequality", str(codequality_file),
+                 "--root", str(report_root), "--codequality", str(codequality_file),
                  "--sarif", str(sarif_file)],
                 cwd=REPO, text=True, capture_output=True, check=False,
             )
@@ -93,18 +122,43 @@ def main() -> int:
             results = sarif["runs"][0]["results"]
             if not isinstance(results, list):
                 raise RuntimeError("missing SARIF results")
+            resolved_root = report_root.resolve()
             for entry in quality:
                 position = entry["location"]
-                source = REPO / position["path"]
+                source = (report_root / position["path"]).resolve()
+                try:
+                    source.relative_to(resolved_root)
+                except ValueError as exc:
+                    raise RuntimeError(f"Code Quality path escaped --root: {position}") from exc
                 if not source.is_file() or position["lines"]["begin"] < 1:
                     raise RuntimeError(f"invalid source location: {position}")
                 if len(entry["fingerprint"]) != 64:
                     raise RuntimeError("Code Quality entry lacks stable SHA-256 fingerprint")
             if args.fixture:
-                if len(quality) != 2 or len(results) != 5:
+                if len(quality) != 2 or len(results) != 9:
                     raise RuntimeError("synthetic located/unlocated coverage changed")
-                if sum("locations" in entry for entry in results) != 2:
+                located = [entry for entry in results if "locations" in entry]
+                if len(located) != 2:
                     raise RuntimeError("synthetic fixture must produce two located SARIF results")
+                located_uris = {
+                    entry["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                    for entry in located
+                }
+                expected_uri = f"{EXAMPLE}/src/lib.rs"
+                if located_uris != {expected_uri}:
+                    raise RuntimeError(f"unexpected SARIF source locations: {sorted(located_uris)}")
+
+                boundary_codes = {
+                    "TEST_MISSING_FILE", "TEST_TRAVERSAL",
+                    "TEST_ABSOLUTE_OUTSIDE", "TEST_SYMLINK_ESCAPE",
+                }
+                for code in boundary_codes:
+                    matches = [entry for entry in results if entry.get("ruleId") == code]
+                    if len(matches) != 1 or "locations" in matches[0]:
+                        raise RuntimeError(f"{code} must appear exactly once and remain unlocated")
+                if boundary_codes.intersection(entry["check_name"] for entry in quality):
+                    raise RuntimeError("outside-checkout finding leaked into Code Quality")
+
                 fingerprints = {entry["fingerprint"] for entry in quality}
                 if len(fingerprints) != 2:
                     raise RuntimeError("duplicate semantic findings require distinct fingerprints")
@@ -112,6 +166,16 @@ def main() -> int:
                 # Shift only the source positions, not the finding identity.
                 # The same inherited findings must not appear new in a GitLab MR.
                 shifted_report = example_fixture()
+                shifted_report["findings"]["panic_issues"].extend([
+                    {"code": "TEST_MISSING_FILE", "issue_type": "missing source",
+                     "location": "src/missing.rs:1"},
+                    {"code": "TEST_TRAVERSAL", "issue_type": "parent traversal",
+                     "location": "../outside.rs:1"},
+                    {"code": "TEST_ABSOLUTE_OUTSIDE", "issue_type": "outside checkout",
+                     "file": str(outside_source), "line": 1},
+                    {"code": "TEST_SYMLINK_ESCAPE", "issue_type": "escaping symlink",
+                     "location": "src/escape.rs:1"},
+                ])
                 for entry in shifted_report["findings"]["panic_issues"]:
                     if entry.get("location") == "src/lib.rs:63":
                         entry["location"] = "src/lib.rs:61"
@@ -120,7 +184,7 @@ def main() -> int:
                 input_file.write_text(json.dumps(shifted_report), encoding="utf-8")
                 shifted_result = subprocess.run(
                     [sys.executable, str(CONVERTER), "--input", str(input_file),
-                     "--root", str(REPO), "--codequality", str(codequality_file),
+                     "--root", str(report_root), "--codequality", str(codequality_file),
                      "--sarif", str(sarif_file)],
                     cwd=REPO, text=True, capture_output=True, check=False,
                 )
@@ -136,7 +200,7 @@ def main() -> int:
                 original_quality = codequality_file.read_bytes()
                 overlap = subprocess.run(
                     [sys.executable, str(CONVERTER), "--input", str(input_file),
-                     "--root", str(REPO), "--codequality", str(codequality_file),
+                     "--root", str(report_root), "--codequality", str(codequality_file),
                      "--sarif", str(codequality_file)],
                     cwd=REPO, text=True, capture_output=True, check=False,
                 )
@@ -148,7 +212,7 @@ def main() -> int:
                 original_input = input_file.read_bytes()
                 overwrite = subprocess.run(
                     [sys.executable, str(CONVERTER), "--input", str(input_file),
-                     "--root", str(REPO), "--codequality", str(input_file),
+                     "--root", str(report_root), "--codequality", str(input_file),
                      "--sarif", str(sarif_file)],
                     cwd=REPO, text=True, capture_output=True, check=False,
                 )
