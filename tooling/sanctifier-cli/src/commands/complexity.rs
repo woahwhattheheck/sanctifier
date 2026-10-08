@@ -168,6 +168,30 @@ impl<'ast> Visit<'ast> for FunctionSpans {
 mod issue_696_regression {
     use super::*;
     #[test]
+    fn nested_declarations_do_not_inflate_outer_function_complexity() {
+        let source = r#"
+            pub fn outer() {
+                fn helper() { if true { panic!("unused"); } }
+                struct Inner;
+                impl Inner {
+                    fn method() { for _ in 0..3 { work(); } }
+                }
+                if true { work(); }
+            }
+        "#;
+        let parsed = syn::parse_file(source).unwrap();
+        let metrics = analyze_complexity(&parsed, "nested.rs");
+        let outer = metrics.functions.iter().find(|f| f.name == "outer").unwrap();
+        let method = metrics.functions.iter().find(|f| f.name == "method").unwrap();
+        assert_eq!(outer.cyclomatic_complexity, 2);
+        assert_eq!(outer.max_nesting_depth, 1);
+        assert_eq!(method.cyclomatic_complexity, 2);
+        let mut spans = FunctionSpans::default();
+        spans.visit_file(&parsed);
+        assert_eq!(metrics.functions.len(), spans.lines.len());
+    }
+
+    #[test]
     fn nested_function_spans_preserve_actual_line_counts() {
         let source = "pub fn first() {\n    if true {\n        work();\n    }\n}\n\npub fn second() {}\n";
         let parsed = syn::parse_file(source).unwrap();
