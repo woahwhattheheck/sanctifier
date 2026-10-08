@@ -5,7 +5,7 @@ orb configuration from GitHub without requiring a registry publication.
 Organizations must allow-list the source URL as described in the CircleCI
 documentation: https://circleci.com/docs/orbs/use/orb-intro/
 
-The orb source is `.circleci/orbs/sanctifier.yml`. It defines a reusable
+The orb source is `integrations/circleci/sanctifier-orb.yml`. It defines a reusable
 `sanctifier/analyze` command and a ready-to-run `sanctifier/scan` job.
 
 ## Consumer configuration
@@ -15,7 +15,7 @@ Add the following to the consumer repository's `.circleci/config.yml`:
 ```yaml
 version: 2.1
 orbs:
-  sanctifier: https://raw.githubusercontent.com/Centurylong/sanctifier/refs/heads/main/.circleci/orbs/sanctifier.yml
+  sanctifier: https://raw.githubusercontent.com/Centurylong/sanctifier/refs/heads/main/integrations/circleci/sanctifier-orb.yml
 
 workflows:
   security:
@@ -26,7 +26,7 @@ workflows:
 
 Until the upstream PR merges, replace the URL with the public development
 branch at
-`https://raw.githubusercontent.com/woahwhattheheck/sanctifier/refs/heads/gf708-circleci-url-orb-20261008/.circleci/orbs/sanctifier.yml`.
+`https://raw.githubusercontent.com/woahwhattheheck/sanctifier/refs/heads/gf708-circleci-url-orb-20261008/integrations/circleci/sanctifier-orb.yml`.
 Pin to an immutable source commit for production configurations.
 
 ## Workflow behavior
@@ -60,7 +60,7 @@ source, and run the `security` workflow. Inspect CircleCI Artifacts for
 fail the scan job after those artifacts appear.
 
 The repository also includes a standalone consumer config at
-`.circleci/examples/sanctifier-consumer.yml`.
+`integrations/circleci/example.config.yml`.
 
 **Verification boundary:** This PR delivers the importable source and example.
 A hosted CircleCI workflow execution and optional publication into a named
