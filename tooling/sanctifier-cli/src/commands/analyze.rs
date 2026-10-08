@@ -2,6 +2,7 @@ use crate::commands::webhook::{
     send_scan_completed_webhooks, ScanWebhookPayload, ScanWebhookSummary,
 };
 use clap::Args;
+use crate::commands::diff::{self, DiffArgs};
 use colored::*;
 use sanctifier_core::baseline::{apply_baseline, load_baseline, BaselineEntry};
 use sanctifier_core::finding_codes;
@@ -36,8 +37,12 @@ pub struct AnalyzeArgs {
     pub webhook_urls: Vec<String>,
 
     /// Ignore .sanctify-baseline.json and report all findings.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "since")]
     pub no_baseline: bool,
+
+    /// Compare against a git base and report only introduced findings (PR gate).
+    #[arg(long, value_name = "REF")]
+    pub since: Option<String>,
 
     /// Profile peak memory usage and report it at the end of the scan.
     #[arg(long)]
@@ -49,6 +54,16 @@ pub struct AnalyzeArgs {
 }
 
 pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
+    if let Some(ref git_ref) = args.since {
+        return diff::exec(DiffArgs {
+            git_ref: git_ref.clone(),
+            path: args.path.clone(),
+            fail_on_new: true,
+            format: args.format.clone(),
+            only_new: true,
+            vuln_db: args.vuln_db.clone(),
+        });
+    }
     let path = &args.path;
     let format = &args.format;
     let _limit = args.limit;
