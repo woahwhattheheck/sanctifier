@@ -367,6 +367,28 @@ mod tests {
     }
 
     #[test]
+    fn report_markdown_matches_committed_snapshot() {
+        let findings = vec![
+            RuleViolation::new(
+                CENTRALIZATION_RISK,
+                Severity::Error,
+                "Admin-gated `upgrade` can perform: contract upgrade; controlling authority: admin".to_string(),
+                "src/vault.rs:upgrade:12".to_string(),
+            ),
+            RuleViolation::new(
+                CENTRALIZATION_RISK,
+                Severity::Warning,
+                "Admin-gated `set_fee` can perform: fee control; controlling authority: governor".to_string(),
+                "src/token.rs:set_fee:34".to_string(),
+            ),
+        ];
+        assert_eq!(
+            markdown_section(&findings),
+            include_str!("../../tests/fixtures/centralization-report.md"),
+        );
+    }
+
+    #[test]
     fn reports_admin_role_guard_and_low_impact_custom_power() {
         let source = r#"
             impl Contract {
