@@ -27,6 +27,7 @@ pub const BLS_SUBGROUP_UNCHECKED: &str = "SANCT_BLS_SUBGROUP_UNCHECKED";
 pub const SANCT_UNWRAP: &str = "SANCT_UNWRAP";
 pub const INIT_HARDCODED_ADMIN: &str = "SANCT_INIT_HARDCODED_ADMIN";
 pub const SANCT_VISIBILITY: &str = "SANCT_VISIBILITY";
+pub const CENTRALIZATION_RISK: &str = "SANCT_CENTRALIZATION";
 pub const UNBOUNDED_STORAGE: &str = "SANCT_UNBOUNDED_STORAGE";
 pub const SANCT_VIEW_PANIC: &str = "SANCT_VIEW_PANIC";
 pub const ALLOWANCE_RACE: &str = "SANCT_ALLOWANCE_RACE";
@@ -205,6 +206,11 @@ pub fn all_finding_codes() -> Vec<FindingCode> {
             description: "Helper-shaped state mutator is publicly exposed without authorization",
         },
         FindingCode {
+            code: CENTRALIZATION_RISK,
+            category: "centralization",
+            description: "Admin- or role-gated public capabilities, including high-impact mint/upgrade/drain powers",
+        },
+        FindingCode {
             code: UNBOUNDED_STORAGE,
             category: "denial_of_service",
             description:
@@ -333,6 +339,7 @@ mod tests {
         assert!(codes.iter().any(|c| c.code == CUSTOM_RULE_MATCH));
         assert!(codes.iter().any(|c| c.code == SANCT_UNWRAP));
         assert!(codes.iter().any(|c| c.code == SANCT_VISIBILITY));
+        assert!(codes.iter().any(|c| c.code == CENTRALIZATION_RISK));
         assert!(codes.iter().any(|c| c.code == INIT_HARDCODED_ADMIN));
         assert!(codes.iter().any(|c| c.code == UNBOUNDED_STORAGE));
         assert!(codes.iter().any(|c| c.code == SANCT_VIEW_PANIC));
