@@ -113,7 +113,10 @@ pub fn exec(args: ProveArgs) -> anyhow::Result<()> {
 
     for result in &results {
 
-        if result.status == ProofStatus::Violated {
+        if result.status == ProofStatus::Violated
+            || (transitions.is_some() && result.status == ProofStatus::Unknown)
+        {
+            // An undecided transition proof is not a successful proof in CI.
             any_violated = true;
         }
 
