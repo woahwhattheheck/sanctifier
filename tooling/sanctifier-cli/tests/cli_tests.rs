@@ -369,6 +369,35 @@ fn test_baseline_trend_refuses_to_overwrite_stored_baseline() {
         ));
 
     assert_eq!(fs::read_to_string(&baseline_path).unwrap(), before);
+
+    // A hard link resolves to a different pathname but shares the exact
+    // baseline inode. Trend output must not truncate either name.
+    #[cfg(unix)]
+    {
+        let alias_path = temp_dir.path().join("baseline-alias.json");
+        fs::hard_link(&baseline_path, &alias_path).unwrap();
+        assert_ne!(
+            fs::canonicalize(&alias_path).unwrap(),
+            fs::canonicalize(&baseline_path).unwrap()
+        );
+
+        Command::cargo_bin("sanctifier")
+            .unwrap()
+            .current_dir(temp_dir.path())
+            .arg("baseline")
+            .arg("--trend")
+            .arg("--output")
+            .arg("baseline-alias.json")
+            .arg("contract.rs")
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(
+                "--output cannot overwrite the stored .sanctify-baseline.json",
+            ));
+
+        assert_eq!(fs::read_to_string(&baseline_path).unwrap(), before);
+        assert_eq!(fs::read_to_string(&alias_path).unwrap(), before);
+    }
 }
 
 #[test]
