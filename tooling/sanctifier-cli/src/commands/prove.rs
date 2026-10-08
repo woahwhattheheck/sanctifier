@@ -1,12 +1,15 @@
 use anyhow::Context as _;
 use clap::Args;
 use colored::*;
-use sanctifier_core::smt::{ProofResult, ProofStatus, SmtProver, TokenInvariant};
+use sanctifier_core::smt::{
+    configured_z3_config, BalanceTransition, ProofResult, ProofStatus, SmtProver,
+    TokenInvariant, DEFAULT_Z3_TIMEOUT_MS,
+};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use z3::{Config, Context};
+use z3::Context;
 
 #[derive(Args)]
 pub struct ProveArgs {
@@ -17,6 +20,14 @@ pub struct ProveArgs {
     /// Invariant to prove: balance_non_negative | supply_conserved | no_unauthorized_mint | all
     #[arg(long)]
     pub invariant: String,
+
+    /// Prove balance transitions for transfer, mint, burn, or all (with --invariant balance_non_negative)
+    #[arg(long)]
+    pub transition: Option<String>,
+
+    /// Demonstrate an unchecked transfer's negative balance with a Z3 SAT witness
+    #[arg(long, requires = "transition")]
+    pub unsafe_transfer: bool,
 
     /// Directory to write proof certificates (default: <path>/.sanctifier/proofs)
     #[arg(long)]
@@ -46,7 +57,29 @@ struct ProofCertificate {
 pub fn exec(args: ProveArgs) -> anyhow::Result<()> {
     let invariants = resolve_invariants(&args.invariant)?;
 
-    let cfg = Config::new();
+    let transitions = match args.transition.as_deref() {
+        None => None,
+        Some("all") => Some(vec![
+            BalanceTransition::Transfer,
+            BalanceTransition::Mint,
+            BalanceTransition::Burn,
+        ]),
+        Some(s) => Some(vec![
+            BalanceTransition::parse(s).ok_or_else(|| {
+                anyhow::anyhow!("Unknown balance transition '{s}'. Use transfer, mint, burn, or all")
+            })?,
+        ]),
+    };
+    if transitions.is_some()
+        && (invariants.len() != 1 || invariants[0] != TokenInvariant::BalanceNonNegative)
+    {
+        anyhow::bail!("--transition requires --invariant balance_non_negative");
+    }
+    if args.unsafe_transfer && args.transition.as_deref() != Some("transfer") {
+        anyhow::bail!("--unsafe-transfer requires --transition transfer");
+    }
+
+    let cfg = configured_z3_config(DEFAULT_Z3_TIMEOUT_MS);
     let ctx = Context::new(&cfg);
     let prover = SmtProver::new(&ctx);
 
@@ -67,8 +100,18 @@ pub fn exec(args: ProveArgs) -> anyhow::Result<()> {
 
     let mut any_violated = false;
 
-    for inv in &invariants {
-        let result = prover.prove_invariant(inv);
+    let results: Vec<ProofResult> = match &transitions {
+        Some(operations) => operations
+            .iter()
+            .map(|op| prover.prove_balance_transition(*op, !args.unsafe_transfer))
+            .collect(),
+        None => invariants
+            .iter()
+            .map(|invariant| prover.prove_invariant(invariant))
+            .collect(),
+    };
+
+    for result in &results {
 
         if result.status == ProofStatus::Violated {
             any_violated = true;
