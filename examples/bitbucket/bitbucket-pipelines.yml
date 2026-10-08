@@ -10,7 +10,7 @@ pipelines:
       - step:
           name: Sanctifier security findings
           script:
-            - apt-get update && apt-get install -y --no-install-recommends python3 libz3-dev libdbus-1-dev pkg-config
+            - apt-get update && apt-get install -y --no-install-recommends python3 clang libclang-dev libz3-dev libdbus-1-dev pkg-config
             - git clone --depth 1 https://github.com/Centurylong/sanctifier.git /tmp/sanctifier-src
             - cargo install --locked --path /tmp/sanctifier-src/tooling/sanctifier-cli
             - |
