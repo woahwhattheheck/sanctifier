@@ -24,7 +24,7 @@ Set SANCTIFIER_SOURCE_URL and SANCTIFIER_REF only when intentionally testing a s
         SANCTIFIER_SOURCE_URL: "https://github.com/woahwhattheheck/sanctifier.git"
         SANCTIFIER_REF: "feat/grantfox707-gitlab-ci-report-20261007"
 
-Return to the upstream source and a reviewed release tag/commit after merge. A GitLab runner compiles and runs code from this source URL; restrict changes to trusted maintainers. If your existing pipeline uses a different job name, merge the variable settings into the included sanctifier_security job rather than defining a second scan.
+Return to the upstream source and a reviewed release tag or maintained branch after merge. A GitLab runner compiles and runs code from this source URL; restrict changes to trusted maintainers. If your existing pipeline uses a different job name, merge the variable settings into the included sanctifier_security job rather than defining a second scan.
 
 ## Artifacts and failure behavior
 
