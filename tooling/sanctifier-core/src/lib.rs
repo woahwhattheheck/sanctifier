@@ -400,16 +400,34 @@ fn root_relative_path(root: &std::path::Path, path: &std::path::Path) -> Option<
 }
 
 impl SanctifyConfig {
+    // Legacy ignore_paths are directory-name fragments, and may also name a
+    // relative directory suffix. The final file name is not a directory.
+    // Use the same rule for recursive walks and explicit-file scans.
+    fn ignored_directory(&self, relative: &str, is_file: bool) -> bool {
+        let mut segments: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+        if is_file {
+            segments.pop();
+        }
+        let dir_path = segments.join("/");
+        self.ignore_paths.iter().any(|fragment| {
+            let fragment = fragment.replace('\\', "/");
+            !fragment.is_empty()
+                && (segments.iter().any(|segment| segment.contains(&fragment))
+                    || (!dir_path.is_empty() && dir_path.ends_with(&fragment)))
+        })
+    }
+
     /// Include all files when no include globs are configured. Any exclusion wins.
     pub fn path_allowed(&self, root: &std::path::Path, path: &std::path::Path) -> bool {
         let Some(relative) = root_relative_path(root, path) else {
             return false;
         };
-        (self.include_paths.is_empty()
-            || self
-                .include_paths
-                .iter()
-                .any(|pattern| glob_path_matches(pattern, &relative)))
+        !self.ignored_directory(&relative, true)
+            && (self.include_paths.is_empty()
+                || self
+                    .include_paths
+                    .iter()
+                    .any(|pattern| glob_path_matches(pattern, &relative)))
             && !self
                 .exclude_paths
                 .iter()
@@ -420,9 +438,11 @@ impl SanctifyConfig {
     pub fn directory_excluded(&self, root: &std::path::Path, dir: &std::path::Path) -> bool {
         root_relative_path(root, dir)
             .map(|relative| {
-                self.exclude_paths
-                    .iter()
-                    .any(|pattern| glob_path_matches(pattern, &relative))
+                self.ignored_directory(&relative, false)
+                    || self
+                        .exclude_paths
+                        .iter()
+                        .any(|pattern| glob_path_matches(pattern, &relative))
             })
             .unwrap_or(false)
     }
@@ -442,6 +462,24 @@ mod path_glob_tests {
         assert!(!glob_path_matches("src/**/mod?.rs", "src/a/b/mod23.rs"));
         assert!(glob_path_matches("**/*.rs", "lib.rs"));
         assert!(glob_path_matches("**/*.rs", "src/nested/lib.rs"));
+    }
+
+    #[test]
+    fn legacy_ignore_fragments_apply_to_nested_and_explicit_files() {
+        let root = Path::new("/project");
+        let mut config = SanctifyConfig::default();
+        config.include_paths = vec!["**/*.rs".into()];
+        config.ignore_paths = vec!["target".into(), "generated".into(), "vendor/code".into()];
+
+        assert!(!config.path_allowed(root, &root.join("src/target/lib.rs")));
+        assert!(!config.path_allowed(root, &root.join("src/generated-code/lib.rs")));
+        assert!(!config.path_allowed(root, &root.join("src/vendor/code/lib.rs")));
+        assert!(config.directory_excluded(root, &root.join("src/target")));
+        assert!(config.directory_excluded(root, &root.join("src/generated-code")));
+        assert!(config.directory_excluded(root, &root.join("src/vendor/code")));
+        // Filename fragments are not directory fragments.
+        assert!(config.path_allowed(root, &root.join("src/app/generated.rs")));
+        assert!(config.path_allowed(root, &root.join("src/app/main.rs")));
     }
 
     #[test]
