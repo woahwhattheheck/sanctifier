@@ -10,7 +10,9 @@ import argparse
 from functools import lru_cache
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+import os
+from pathlib import Path
+import tempfile, PurePosixPath
 import re
 import sys
 from urllib.parse import quote
@@ -206,9 +208,38 @@ def main() -> int:
     try:
         report = json.loads(args.input.read_text(encoding="utf-8"))
         quality, sarif = convert(report, args.root.resolve())
-        for target, payload in ((args.codequality, quality), (args.sarif, sarif)):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        outputs = ((args.codequality, quality), (args.sarif, sarif))
+        # Fail before creating files if destinations alias each other or the
+        # analyzer report. Path.resolve also detects symlinked input/outputs.
+        resolved = [target.resolve() for target, _ in outputs]
+        if len(set(resolved)) != len(resolved):
+            raise ValueError("--codequality and --sarif must be distinct paths")
+        if args.input.resolve() in resolved:
+            raise ValueError("report output must not overwrite --input")
+        if any(target.exists() and not target.is_file() for target, _ in outputs):
+            raise ValueError("report destinations must be regular files")
+
+        # Serialize both reports before publication; a serialization/permission
+        # failure must not corrupt an existing artifact from the previous run.
+        # Same-directory temp files make each final replace atomic.
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for target, payload in outputs:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=target.parent,
+                    prefix=f".{target.name}.", suffix=".tmp", delete=False,
+                ) as stream:
+                    staged.append((Path(stream.name), target))
+                    json.dump(payload, stream, indent=2, ensure_ascii=False)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            for temporary, target in staged:
+                os.replace(temporary, target)
+        finally:
+            for temporary, _ in staged:
+                temporary.unlink(missing_ok=True)
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"sanctifier GitLab report conversion failed: {exc}", file=sys.stderr)
         return 2
