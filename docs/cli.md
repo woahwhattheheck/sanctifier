@@ -425,6 +425,8 @@ Run SMT-based formal verification on Soroban token contract invariants
 
   Default value: `.`
 * `--invariant <INVARIANT>` — Invariant to prove: balance_non_negative | supply_conserved | no_unauthorized_mint | all
+* `--transition <TRANSITION>` — Prove balance transitions for transfer, mint, burn, or all (with --invariant balance_non_negative)
+* `--unsafe-transfer` — Demonstrate an unchecked transfer's negative balance with a Z3 SAT witness
 * `--output-dir <OUTPUT_DIR>` — Directory to write proof certificates (default: <path>/.sanctifier/proofs)
 * `--no-save` — Skip saving proof certificates to disk (useful for CI smoke checks)
 * `--json` — Emit results as JSON
