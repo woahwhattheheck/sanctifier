@@ -1,0 +1,19 @@
+---
+source: tooling/sanctifier-core/tests/detector_snapshots.rs
+expression: findings
+---
+- rule_name: SANCT_MAP_ITERATION_ORDER
+  severity: Warning
+  message: "SANCT_MAP_ITERATION_ORDER: map scores iteration in first_positive returns a value derived from the first matching map entry; the result can change when map iteration order changes"
+  location: "first_positive:10"
+  suggestion: "Make ordering explicit before selecting or emitting entries, or use an order-insensitive reduction."
+- rule_name: SANCT_MAP_ITERATION_ORDER
+  severity: Warning
+  message: "SANCT_MAP_ITERATION_ORDER: map scores iteration in keys_in_iteration_order emits map entries through order-preserving push_back(); the result can change when map iteration order changes"
+  location: "keys_in_iteration_order:20"
+  suggestion: "Make ordering explicit before selecting or emitting entries, or use an order-insensitive reduction."
+- rule_name: SANCT_MAP_ITERATION_ORDER
+  severity: Warning
+  message: "SANCT_MAP_ITERATION_ORDER: map scores iteration in first_key selects an entry with order-sensitive iterator method next(); the result can change when map iteration order changes"
+  location: "first_key:27"
+  suggestion: "Make ordering explicit before selecting or emitting entries, or use an order-insensitive reduction."
