@@ -11,8 +11,8 @@ from functools import lru_cache
 import hashlib
 import json
 import os
-from pathlib import Path
-import tempfile, PurePosixPath
+from pathlib import Path, PurePosixPath
+import tempfile
 import re
 import sys
 from urllib.parse import quote
