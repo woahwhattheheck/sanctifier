@@ -37,11 +37,22 @@ pub(crate) fn load_config(path: &Path) -> Result<SanctifyConfig> {
 
     loop {
         let config_path = current.join(".sanctify.toml");
-        if config_path.exists() {
-            let content = fs::read_to_string(&config_path).with_context(|| {
-                format!("failed to read Sanctifier config {}", config_path.display())
-            })?;
-            return parse_config(&content, &config_path);
+        // exists() follows symlinks, so a dangling .sanctify.toml looks absent.
+        // That silently downgrades a configured scan to the default policy.
+        // symlink_metadata sees the link itself and preserves read errors.
+        match fs::symlink_metadata(&config_path) {
+            Ok(_) => {
+                let content = fs::read_to_string(&config_path).with_context(|| {
+                    format!("failed to read Sanctifier config {}", config_path.display())
+                })?;
+                return parse_config(&content, &config_path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to inspect Sanctifier config {}", config_path.display())
+                });
+            }
         }
 
         if !current.pop() {
@@ -167,6 +178,29 @@ mod tests {
 
     fn parse(input: &str) -> Result<SanctifyConfig> {
         parse_config(input, Path::new("/tmp/.sanctify.toml"))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_config_symlink_is_not_silently_treated_as_absent() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        symlink("nonexistent-config.toml", project.join(".sanctify.toml")).unwrap();
+
+        let error = load_config(&project).unwrap_err().to_string();
+        assert!(error.contains("failed to read Sanctifier config"));
+        assert!(error.contains(".sanctify.toml"));
+    }
+
+    #[test]
+    fn missing_configuration_still_uses_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_config(root.path()).unwrap().enabled_rules,
+            SanctifyConfig::default().enabled_rules
+        );
     }
 
     #[test]
