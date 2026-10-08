@@ -189,9 +189,9 @@ def main() -> int:
     commit = os.environ.get("BITBUCKET_COMMIT")
     if not all((workspace, repository, commit)):
         raise ValueError("BITBUCKET_WORKSPACE, BITBUCKET_REPO_SLUG and BITBUCKET_COMMIT required")
-    token = os.environ.get("BITBUCKET_API_TOKEN") if args.auth_mode == "token" else None
+    token = os.environ.get("BITBUCKET_ACCESS_TOKEN") if args.auth_mode == "token" else None
     if args.auth_mode == "token" and not token:
-        raise ValueError("BITBUCKET_API_TOKEN is required outside Pipelines")
+        raise ValueError("BITBUCKET_ACCESS_TOKEN is required outside Pipelines")
     if args.auth_mode == "pipeline":
         # Atlassian's Pipelines proxy adds the authorization header automatically.
         base = "http://api.bitbucket.org/2.0"
