@@ -36,7 +36,7 @@ pub fn generate_kani_harnesses(source: &str, crate_name: &str) -> Result<String>
 
         for method in &contract_impl.items {
             let ImplItem::Fn(method) = method else { continue };
-            if !matches!(method.vis, Visibility::Public(_)) { continue; }
+            if !matches!(&method.vis, Visibility::Public(_)) { continue; }
             let method_name = method.sig.ident.to_string();
             let proof_name = format!(
                 "verify_{}_{}", to_snake(&contract), to_snake(&method_name)
@@ -62,7 +62,7 @@ pub fn generate_kani_harnesses(source: &str, crate_name: &str) -> Result<String>
                     "unsupported argument {} in {}.{}", name, contract, method_name
                 ))?;
 
-                if !matches!(kind, ArgumentKind::Primitive) { requires_env = true; }
+                if !matches!(&kind, ArgumentKind::Primitive) { requires_env = true; }
                 let ty = arg.ty.to_token_stream().to_string();
                 let expr = match kind {
                     ArgumentKind::Primitive => format!("kani::any::<{}>()", ty),
@@ -153,7 +153,7 @@ fn classify_type(ty: &Type) -> Result<ArgumentKind> {
     if ty.qself.is_some() { bail!("qualified associated type is not supported"); }
     let seg = ty.path.segments.last().ok_or_else(|| anyhow!("empty type path"))?;
     let name = seg.ident.to_string();
-    let no_args = matches!(seg.arguments, PathArguments::None);
+    let no_args = matches!(&seg.arguments, PathArguments::None);
     if no_args && matches!(
         name.as_str(),
         "bool" | "i8" | "i16" | "i32" | "i64" | "i128" |
