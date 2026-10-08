@@ -89,16 +89,11 @@ pub fn exec(args: BaselineArgs) -> anyhow::Result<()> {
         };
 
         if let Some(output) = &args.output {
-            if let (Ok(output_resolved), Ok(baseline_resolved)) = (
-                fs::canonicalize(output),
-                fs::canonicalize(&baseline_path),
-            ) {
-                if output_resolved == baseline_resolved {
-                    anyhow::bail!(
-                        "--output cannot overwrite the stored {}",
-                        BASELINE_FILE
-                    );
-                }
+            if output_points_to_baseline(output, &baseline_path) {
+                anyhow::bail!(
+                    "--output cannot overwrite the stored {}",
+                    BASELINE_FILE
+                );
             }
             fs::write(output, rendered)?;
         } else {
@@ -158,6 +153,30 @@ pub fn exec(args: BaselineArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Keep trend reports from destroying the baseline, including via symlinks
+/// and (on Unix) distinct hard-link names for the same underlying file.
+fn output_points_to_baseline(output: &Path, baseline: &Path) -> bool {
+    if let (Ok(output_path), Ok(baseline_path)) =
+        (fs::canonicalize(output), fs::canonicalize(baseline))
+    {
+        if output_path == baseline_path {
+            return true;
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // canonicalize checks path names; two hard links have different names
+        // but share a device/inode. metadata() follows symlinks as well.
+        if let (Ok(a), Ok(b)) = (fs::metadata(output), fs::metadata(baseline)) {
+            return a.dev() == b.dev() && a.ino() == b.ino();
+        }
+    }
+
+    false
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
