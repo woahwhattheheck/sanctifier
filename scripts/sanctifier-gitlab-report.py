@@ -25,24 +25,44 @@ SEVERITIES = {
 
 
 def path_in_repo(raw: str, root: Path, scan_root: str) -> str | None:
-    """Use a real repo-relative source path without allowing path traversal."""
+    """Accept locations only for existing regular files inside the checkout.
+
+    Resolve symlinks and the optional scan-project prefix before exposing a
+    location. Unknown or outside-root positions remain unlocated in SARIF.
+    """
     path = raw.strip().replace("\\", "/")
     if not path.endswith(".rs"):
         return None
-    if re.match(r"^[A-Za-z]:/", path) or path.startswith("/"):
-        try:
-            return Path(path).resolve().relative_to(root).as_posix()
-        except ValueError:
+
+    root = root.resolve()
+    if re.match(r"^[A-Za-z]:/", path):
+        # A Windows drive path cannot be verified on a non-Windows runner.
+        if sys.platform != "win32":
             return None
-    path = path.removeprefix("./")
-    parts = PurePosixPath(path).parts
-    if not parts or any(part in ("..", ".") for part in parts):
-        return None
-    scan = scan_root.strip().replace("\\", "/").strip("/")
-    if scan not in ("", ".") and not path.startswith(scan + "/"):
-        if not (root / path).exists():
-            path = f"{scan}/{path}"
-    return path
+        candidates = [Path(path)]
+    elif path.startswith("/"):
+        candidates = [Path(path)]
+    else:
+        path = path.removeprefix("./")
+        parts = PurePosixPath(path).parts
+        if not parts or any(part in (".", "..") for part in parts):
+            return None
+        candidates = [root / path]
+        scan = scan_root.strip().replace("\\", "/").strip("/")
+        scan_parts = PurePosixPath(scan).parts
+        if scan not in ("", ".") and all(part not in (".", "..") for part in scan_parts):
+            if not path.startswith(scan + "/"):
+                candidates.append(root / scan / path)
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            relative = resolved.relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved.is_file():
+            return relative.as_posix()
+    return None
 
 
 def source_location(item: dict, root: Path, scan_root: str) -> tuple[str, int] | None:
