@@ -46,7 +46,7 @@ This scans the existing Soroban example contracts/sep41-token-invariants; it acc
 
     python3 scripts/smoke-sanctifier-gitlab-report.py --fixture
 
-The fixture mode explicitly uses a **synthetic, real-schema example report**, with one located and one unlocated finding; it verifies both report channels and does **not** establish that the Rust CLI or hosted GitLab pipeline ran. The full GitLab job must be tried on a project runner for end-to-end acceptance. Keep execution focused on this example rather than running the repository's general test suites.
+The fixture mode explicitly uses a **synthetic, real-schema example report** against an isolated temporary checkout. It verifies two valid source locations plus unlocated invalid-line, missing-file, parent-traversal, absolute-outside-root and symlink-escape cases across both report channels. Outside-checkout findings must stay unlocated in SARIF and must never enter GitLab Code Quality. This does **not** establish that the Rust CLI or hosted GitLab pipeline ran. The full GitLab job must be tried on a project runner for end-to-end acceptance. Keep execution focused on this example rather than running the repository's general test suites.
 
 ## Troubleshooting
 
