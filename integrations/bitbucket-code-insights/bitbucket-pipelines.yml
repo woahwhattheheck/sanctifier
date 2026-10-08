@@ -1,0 +1,30 @@
+# Copy to bitbucket-pipelines.yml in the consuming Soroban repository.
+# Also vendor integrations/bitbucket-code-insights/publish.py from Sanctifier
+# as .ci/sanctifier-bitbucket.py in this repository.
+#
+# Pipeline proxy at localhost:29418 authenticates Code Insights requests,
+# so no Bitbucket credential or extra outbound secret is needed.
+image: rust:1.88
+
+definitions:
+  caches:
+    cargo: /usr/local/cargo/registry
+
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: Sanctifier Code Insights
+          caches:
+            - cargo
+          script:
+            - apt-get update && apt-get install -y --no-install-recommends python3 libz3-dev libdbus-1-dev pkg-config
+            - git clone --depth 1 https://github.com/Centurylong/sanctifier.git /tmp/sanctifier-src
+            - cargo install --locked --path /tmp/sanctifier-src/tooling/sanctifier-cli
+            - |
+              scan_status=0
+              sanctifier analyze . --format json > sanctifier.json || scan_status=$?
+              python3 .ci/sanctifier-bitbucket.py --input sanctifier.json --root .
+              exit "$scan_status"
+          artifacts:
+            - sanctifier.json
