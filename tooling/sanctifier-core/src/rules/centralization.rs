@@ -161,6 +161,13 @@ struct AdminEvidence {
 }
 
 impl<'ast> Visit<'ast> for AdminEvidence {
+    // The outer entrypoint's inventory must not inherit authorization or
+    // capability names from local function declarations. Their bodies are
+    // separate scopes, not executed merely because they are declared here.
+    fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {}
+
+    fn visit_impl_item_fn(&mut self, _node: &'ast syn::ImplItemFn) {}
+
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
         let method = node.method.to_string();
         if matches!(method.as_str(), "require_auth" | "require_auth_for_args") {
