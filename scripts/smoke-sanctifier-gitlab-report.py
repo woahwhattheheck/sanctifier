@@ -129,6 +129,33 @@ def main() -> int:
                 shifted_quality = json.loads(codequality_file.read_text(encoding="utf-8"))
                 if {entry["fingerprint"] for entry in shifted_quality} != fingerprints:
                     raise RuntimeError("source line shifts changed Code Quality fingerprints")
+
+                # Distinct GitLab artifacts must never overwrite one another
+                # or destroy the analyzer input when environment variables
+                # accidentally resolve to the same destination.
+                original_quality = codequality_file.read_bytes()
+                overlap = subprocess.run(
+                    [sys.executable, str(CONVERTER), "--input", str(input_file),
+                     "--root", str(REPO), "--codequality", str(codequality_file),
+                     "--sarif", str(codequality_file)],
+                    cwd=REPO, text=True, capture_output=True, check=False,
+                )
+                if overlap.returncode != 2 or codequality_file.read_bytes() != original_quality:
+                    raise RuntimeError("colliding report paths corrupted Code Quality")
+                if "distinct paths" not in overlap.stderr:
+                    raise RuntimeError("missing actionable collision diagnostic")
+
+                original_input = input_file.read_bytes()
+                overwrite = subprocess.run(
+                    [sys.executable, str(CONVERTER), "--input", str(input_file),
+                     "--root", str(REPO), "--codequality", str(input_file),
+                     "--sarif", str(sarif_file)],
+                    cwd=REPO, text=True, capture_output=True, check=False,
+                )
+                if overwrite.returncode != 2 or input_file.read_bytes() != original_input:
+                    raise RuntimeError("report output corrupted analyzer input")
+                if "must not overwrite --input" not in overwrite.stderr:
+                    raise RuntimeError("missing actionable input-overwrite diagnostic")
             print(
                 f"PASS ({'synthetic converter fixture' if args.fixture else 'real SEP-41 analyzer'}): "
                 f"{len(quality)} located Code Quality entries, {len(results)} SARIF results"
