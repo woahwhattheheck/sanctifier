@@ -457,13 +457,11 @@ fn test_analyze_fails_closed_on_corrupt_error_abi_baseline() {
     fs::create_dir(project.join("src")).unwrap();
     fs::write(
         project.join("Cargo.toml"),
-        "[package]\\nname = \\"abi-fixture\\"\\nversion = \\"0.1.0\\"\\n[dependencies]\\nsoroban-sdk = \\"22\\"\\n"
-            .replace("\\n", "\n")
-            .replace("\\\"", "\""),
+        "[package]\nname = \"abi-fixture\"\nversion = \"0.1.0\"\n[dependencies]\nsoroban-sdk = \"22\"\n",
     ).unwrap();
     fs::write(
         project.join("src/error.rs"),
-        "#[contracterror]\\n#[repr(u32)]\\npub enum Error { A = 1, B }\\n".replace("\\n", "\n"),
+        "#[contracterror]\n#[repr(u32)]\npub enum Error { A = 1, B }\n",
     ).unwrap();
     fs::write(project.join(".sanctify-baseline.json"), "{ invalid JSON").unwrap();
 
