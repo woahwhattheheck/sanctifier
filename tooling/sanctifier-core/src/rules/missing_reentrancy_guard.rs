@@ -225,6 +225,35 @@ fn is_client_constructor(expr: &syn::Expr) -> bool {
 }
 
 impl<'ast> Visit<'ast> for EntryFacts {
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        let active_on_entry = self.guard_active;
+        let guards_on_entry = self.guard_vars.clone();
+        let clients_on_entry = self.client_vars.clone();
+        syn::visit::visit_block(self, node);
+        // An RAII guard acquired inside a nested lexical block has dropped
+        // by the time the surrounding block resumes. A pre-existing guard
+        // survives only if it was not released inside that block.
+        self.guard_active &= active_on_entry;
+        self.guard_vars = guards_on_entry;
+        self.client_vars = clients_on_entry;
+    }
+
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        self.visit_expr(&node.cond);
+        let active_before = self.guard_active;
+        self.visit_block(&node.then_branch);
+        let active_after_then = self.guard_active;
+
+        // The alternative starts from the same pre-branch guard state.
+        self.guard_active = active_before;
+        if let Some((_, alternate)) = &node.else_branch {
+            self.visit_expr(alternate);
+        }
+        // Only retain a guard after if/else when every possible path
+        // retains it; one optional acquisition cannot guard later calls.
+        self.guard_active &= active_after_then;
+    }
+
     fn visit_local(&mut self, node: &'ast syn::Local) {
         if let (syn::Pat::Ident(ident), Some(init)) = (&node.pat, &node.init) {
             let name = ident.ident.to_string();
@@ -398,5 +427,37 @@ mod tests {
         let findings = MissingReentrancyGuardRule::new().check(src);
         assert_eq!(findings.len(), 1);
         assert!(findings[0].location.starts_with("execute:"));
+    }
+
+    #[test]
+    fn optional_and_expired_guards_do_not_suppress_later_external_calls() {
+        let source = r#"
+impl Vault {
+    pub fn withdraw_conditionally(env: Env, token: Address, to: Address, amount: i128, flag: bool) {
+        if flag {
+            let _guard = SanctifiedGuard::enter(&env);
+        }
+        TokenClient::new(&env, &token).transfer(&to, &amount);
+    }
+    pub fn withdraw_expired_guard(env: Env, token: Address, to: Address, amount: i128) {
+        { let _guard = SanctifiedGuard::enter(&env); }
+        TokenClient::new(&env, &token).transfer(&to, &amount);
+    }
+    pub fn withdraw_guarded(env: Env, token: Address, to: Address, amount: i128) {
+        let _guard = SanctifiedGuard::enter(&env);
+        TokenClient::new(&env, &token).transfer(&to, &amount);
+    }
+}
+"#;
+        let findings = MissingReentrancyGuardRule::new().check(source);
+        let names: Vec<_> = findings
+            .iter()
+            .map(|f| f.location.split_once(':').unwrap().0)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["withdraw_conditionally", "withdraw_expired_guard"],
+            "an optional or already-dropped guard must not suppress the warning"
+        );
     }
 }
