@@ -192,6 +192,42 @@ mod issue_696_regression {
     }
 
     #[test]
+    fn else_if_chain_does_not_inflate_nesting_depth() {
+        let source = r#"
+            pub fn classify(value: u8) {
+                if value == 0 {
+                    work();
+                } else if value == 1 {
+                    work();
+                } else if value == 2 {
+                    work();
+                } else {
+                    work();
+                }
+            }
+
+            pub fn actually_nested(value: u8) {
+                if value > 0 {
+                    work();
+                } else {
+                    if value == 0 {
+                        work();
+                    }
+                }
+            }
+        "#;
+        let parsed = syn::parse_file(source).unwrap();
+        let metrics = analyze_complexity(&parsed, "else-if.rs");
+        let chain = metrics.functions.iter().find(|f| f.name == "classify").unwrap();
+        let nested = metrics.functions.iter().find(|f| f.name == "actually_nested").unwrap();
+
+        assert_eq!(chain.cyclomatic_complexity, 4);
+        assert_eq!(chain.max_nesting_depth, 1);
+        assert_eq!(nested.cyclomatic_complexity, 3);
+        assert_eq!(nested.max_nesting_depth, 2);
+    }
+
+    #[test]
     fn nested_function_spans_preserve_actual_line_counts() {
         let source = "pub fn first() {\n    if true {\n        work();\n    }\n}\n\npub fn second() {}\n";
         let parsed = syn::parse_file(source).unwrap();
