@@ -6,7 +6,8 @@ use colored::*;
 use sanctifier_core::baseline::{apply_baseline, load_baseline, BaselineEntry};
 use sanctifier_core::finding_codes;
 use sanctifier_core::memory::{MemoryGuard, MemoryTracker};
-use sanctifier_core::{Analyzer, SanctifyConfig, SizeWarningLevel};
+use sanctifier_core::rules::centralization::{markdown_section, CentralizationRule};
+use sanctifier_core::{Analyzer, Rule, RuleViolation, SanctifyConfig, Severity, SizeWarningLevel};
 use serde_json;
 use std::fs;
 use std::io::{self, Write};
@@ -141,6 +142,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     let mut unhandled_results = Vec::new();
     let mut upgrade_reports = Vec::new();
     let mut smt_issues = Vec::new();
+    let mut centralization_findings: Vec<RuleViolation> = Vec::new();
 
     if path.is_dir() {
         walk_dir(
@@ -159,6 +161,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             &mut unhandled_results,
             &mut upgrade_reports,
             &mut smt_issues,
+            &mut centralization_findings,
         )?;
     } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
         if let Ok(content) = fs::read_to_string(path) {
@@ -176,6 +179,11 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             unhandled_results.extend(analyzer.scan_unhandled_results(&content));
             upgrade_reports.push(analyzer.analyze_upgrade_patterns(&content));
             smt_issues.extend(analyzer.verify_smt_invariants(&content));
+            let mut powers = CentralizationRule::new().check(&content);
+            for finding in &mut powers {
+                finding.location = format!("{}:{}", file_name, finding.location);
+            }
+            centralization_findings.extend(powers);
         }
     }
 
@@ -258,6 +266,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         rep.findings.retain(|f| !is_inline_suppressed(&f.location, finding_codes::UPGRADE_RISK));
     }
     smt_issues.retain(|s| !is_inline_suppressed(&s.location, finding_codes::SMT_INVARIANT_VIOLATION));
+    centralization_findings.retain(|f| !is_inline_suppressed(&f.location, finding_codes::CENTRALIZATION_RISK));
 
     unsafe_patterns.retain(|u| {
         let file_name = u.snippet.split(':').next().unwrap_or("");
@@ -342,6 +351,13 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     let ctx = format!("{}|{}", s.function_name, s.description);
                     current_flat.push(FlatFinding::new(finding_codes::SMT_INVARIANT_VIOLATION, &s.location, &ctx));
                 }
+                for finding in &centralization_findings {
+                    current_flat.push(FlatFinding::new(
+                        finding_codes::CENTRALIZATION_RISK,
+                        &finding.location,
+                        &finding.message,
+                    ));
+                }
 
                 let (new_flat, stale) = apply_baseline(bl, &current_flat);
                 let new_fps: HashSet<String> = new_flat.iter().map(|f| f.fingerprint()).collect();
@@ -408,6 +424,14 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     let fp = FlatFinding::new(finding_codes::SMT_INVARIANT_VIOLATION, &s.location, &ctx).fingerprint();
                     !suppressed_fps.contains(&fp)
                 });
+                centralization_findings.retain(|finding| {
+                    let fp = FlatFinding::new(
+                        finding_codes::CENTRALIZATION_RISK,
+                        &finding.location,
+                        &finding.message,
+                    ).fingerprint();
+                    !suppressed_fps.contains(&fp)
+                });
 
                 (suppressed_count, stale_entries)
             }
@@ -436,7 +460,8 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             .iter()
             .map(|r| r.findings.len())
             .sum::<usize>()
-        + smt_issues.len();
+        + smt_issues.len()
+        + centralization_findings.len();
 
     // ── Memory guard check ───────────────────────────────────────────────────
     if let Some(ref guard) = mem_guard {
@@ -465,7 +490,8 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         || !unhandled_results.is_empty()
         || size_warnings
             .iter()
-            .any(|w| w.level == SizeWarningLevel::ExceedsLimit);
+            .any(|w| w.level == SizeWarningLevel::ExceedsLimit)
+        || centralization_findings.iter().any(|f| f.severity == Severity::Error);
     let timestamp = chrono_timestamp();
 
     let webhook_payload = ScanWebhookPayload {
@@ -525,6 +551,11 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             "event_issues": event_issues,
             "unhandled_results": unhandled_results,
             "upgrade_reports": upgrade_reports,
+            "centralization": {
+                "total_powers": centralization_findings.len(),
+                "powers": &centralization_findings,
+                "markdown": markdown_section(&centralization_findings),
+            },
             "smt_issues": smt_issues,
             "vulnerability_db_matches": vuln_matches,
             "vulnerability_db_version": vuln_db.version,
@@ -551,6 +582,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                 "event_issues": event_issues.len(),
                 "unhandled_results": unhandled_results.len(),
                 "smt_issues": smt_issues.len(),
+                "centralization_powers": centralization_findings.len(),
                 "has_critical": has_critical,
                 "has_high": has_high,
             },
@@ -617,6 +649,13 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
                     "code": finding_codes::UPGRADE_RISK,
                     "category": f.category,
                     "function_name": f.function_name,
+                    "location": f.location,
+                    "message": f.message,
+                    "suggestion": f.suggestion,
+                })).collect::<Vec<_>>(),
+                "centralization": centralization_findings.iter().map(|f| serde_json::json!({
+                    "code": finding_codes::CENTRALIZATION_RISK,
+                    "severity": f.severity,
                     "location": f.location,
                     "message": f.message,
                     "suggestion": f.suggestion,
@@ -781,6 +820,19 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         }
     }
 
+    println!("\n{}", format!("Centralization — admin powers ({}):", centralization_findings.len()).bold());
+    if centralization_findings.is_empty() {
+        println!("   No explicit privileged entrypoints identified.");
+    } else {
+        for finding in &centralization_findings {
+            println!("   [{:?}] [{}] {}", finding.severity, finding_codes::CENTRALIZATION_RISK, finding.message);
+            println!("      Location: {}", finding.location);
+            if let Some(ref suggestion) = finding.suggestion {
+                println!("      Mitigation: {}", suggestion);
+            }
+        }
+    }
+
     if !smt_issues.is_empty() {
         println!("\n{} Found Formal Verification (SMT) issues!", "❌".red());
         for issue in &smt_issues {
@@ -895,6 +947,7 @@ fn walk_dir(
     unhandled_results: &mut Vec<sanctifier_core::UnhandledResultIssue>,
     upgrade_reports: &mut Vec<sanctifier_core::UpgradeReport>,
     smt_issues: &mut Vec<sanctifier_core::smt::SmtInvariantIssue>,
+    centralization_findings: &mut Vec<RuleViolation>,
 ) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -926,6 +979,7 @@ fn walk_dir(
                 unhandled_results,
                 upgrade_reports,
                 smt_issues,
+                centralization_findings,
             )?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             if let Ok(content) = fs::read_to_string(&path) {
@@ -995,6 +1049,12 @@ fn walk_dir(
                     i.location = format!("{}:{}", file_name, i.location);
                 }
                 smt_issues.extend(smt);
+
+                let mut powers = CentralizationRule::new().check(&content);
+                for finding in &mut powers {
+                    finding.location = format!("{}:{}", file_name, finding.location);
+                }
+                centralization_findings.extend(powers);
             }
         }
     }
