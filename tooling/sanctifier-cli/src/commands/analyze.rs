@@ -48,6 +48,34 @@ pub struct AnalyzeArgs {
     pub max_memory: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RulePack {
+    Strict,
+    Recommended,
+    Minimal,
+}
+
+/// The existing enabled_rules list is declarative for named families. A
+/// single preset:<name> selector opts into a real, fixed scan profile.
+fn select_rule_pack(config: &SanctifyConfig) -> anyhow::Result<Option<RulePack>> {
+    let selectors: Vec<&str> = config.enabled_rules.iter()
+        .filter_map(|rule| rule.strip_prefix("preset:"))
+        .collect();
+    if selectors.is_empty() {
+        return Ok(None); // Preserve the current all-detectors behaviour.
+    }
+    if selectors.len() != 1 || config.enabled_rules.len() != 1 {
+        anyhow::bail!("set enabled_rules to a single preset:strict, preset:recommended, or preset:minimal value");
+    }
+    let selected = match selectors[0] {
+        "strict" => RulePack::Strict,
+        "recommended" => RulePack::Recommended,
+        "minimal" => RulePack::Minimal,
+        unknown => anyhow::bail!("unknown Sanctifier rule preset: {unknown}; expected strict, recommended, or minimal"),
+    };
+    Ok(Some(selected))
+}
+
 pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     let path = &args.path;
     let format = &args.format;
@@ -88,7 +116,8 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
         io::stdout().flush().ok();
     }
 
-    let mut config = load_config(path);
+    let mut config = load_config(path)?;
+    let rule_pack = select_rule_pack(&config)?;
     config.ledger_limit = args.limit; // Apply CLI limit to config
     let analyzer = Analyzer::new(config);
 
@@ -147,6 +176,7 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
             path,
             &analyzer,
             &vuln_db,
+            rule_pack,
             &mut collisions,
             &mut size_warnings,
             &mut unsafe_patterns,
@@ -163,19 +193,25 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
         if let Ok(content) = fs::read_to_string(path) {
             let file_name = path.display().to_string();
-            collisions.extend(analyzer.scan_storage_collisions(&content));
             size_warnings.extend(analyzer.analyze_ledger_size(&content));
-            unsafe_patterns.extend(analyzer.analyze_unsafe_patterns(&content));
             auth_gaps.extend(analyzer.scan_auth_gaps(&content));
             panic_issues.extend(analyzer.scan_panics(&content));
             arithmetic_issues.extend(analyzer.scan_arithmetic_overflow(&content));
-            custom_matches
-                .extend(analyzer.analyze_custom_rules(&content, &analyzer.config.custom_rules));
-            vuln_matches.extend(vuln_db.scan(&content, &file_name));
-            event_issues.extend(analyzer.scan_events(&content));
-            unhandled_results.extend(analyzer.scan_unhandled_results(&content));
-            upgrade_reports.push(analyzer.analyze_upgrade_patterns(&content));
-            smt_issues.extend(analyzer.verify_smt_invariants(&content));
+
+            if rule_pack != Some(RulePack::Minimal) {
+                collisions.extend(analyzer.scan_storage_collisions(&content));
+                unsafe_patterns.extend(analyzer.analyze_unsafe_patterns(&content));
+                custom_matches.extend(
+                    analyzer.analyze_custom_rules(&content, &analyzer.config.custom_rules)
+                );
+                vuln_matches.extend(vuln_db.scan(&content, &file_name));
+                event_issues.extend(analyzer.scan_events(&content));
+                unhandled_results.extend(analyzer.scan_unhandled_results(&content));
+                upgrade_reports.push(analyzer.analyze_upgrade_patterns(&content));
+            }
+            if rule_pack.is_none() || rule_pack == Some(RulePack::Strict) {
+                smt_issues.extend(analyzer.verify_smt_invariants(&content));
+            }
         }
     }
 
@@ -853,7 +889,7 @@ fn chrono_timestamp() -> String {
     format!("{}", secs)
 }
 
-fn load_config(path: &Path) -> SanctifyConfig {
+fn load_config(path: &Path) -> anyhow::Result<SanctifyConfig> {
     let mut current = if path.is_file() {
         path.parent()
             .map(|p| p.to_path_buf())
@@ -865,17 +901,21 @@ fn load_config(path: &Path) -> SanctifyConfig {
     loop {
         let config_path = current.join(".sanctify.toml");
         if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(&config_path) {
-                if let Ok(config) = toml::from_str(&content) {
-                    return config;
-                }
-            }
+            // The nearest config wins. Falling back silently on invalid TOML
+            // could turn preset:minimal into a full/SMT scan without notice.
+            let content = fs::read_to_string(&config_path).map_err(|error| {
+                anyhow::anyhow!("Cannot read {}: {}", config_path.display(), error)
+            })?;
+            let config = toml::from_str::<SanctifyConfig>(&content).map_err(|error| {
+                anyhow::anyhow!("Invalid {}: {}", config_path.display(), error)
+            })?;
+            return Ok(config);
         }
         if !current.pop() {
             break;
         }
     }
-    SanctifyConfig::default()
+    Ok(SanctifyConfig::default())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -883,6 +923,7 @@ fn walk_dir(
     dir: &Path,
     analyzer: &Analyzer,
     vuln_db: &VulnDatabase,
+    rule_pack: Option<RulePack>,
     collisions: &mut Vec<sanctifier_core::StorageCollisionIssue>,
     size_warnings: &mut Vec<sanctifier_core::SizeWarning>,
     unsafe_patterns: &mut Vec<sanctifier_core::UnsafePattern>,
@@ -914,6 +955,7 @@ fn walk_dir(
                 &path,
                 analyzer,
                 vuln_db,
+                rule_pack,
                 collisions,
                 size_warnings,
                 unsafe_patterns,
@@ -931,70 +973,56 @@ fn walk_dir(
             if let Ok(content) = fs::read_to_string(&path) {
                 let file_name = path.display().to_string();
 
-                let mut c = analyzer.scan_storage_collisions(&content);
-                for i in &mut c {
-                    i.location = format!("{}:{}", file_name, i.location);
+                size_warnings.extend(analyzer.analyze_ledger_size(&content));
+                for gap in analyzer.scan_auth_gaps(&content) {
+                    auth_gaps.push(format!("{}:{}", file_name, gap));
                 }
-                collisions.extend(c);
-
-                let s = analyzer.analyze_ledger_size(&content);
-                size_warnings.extend(s);
-
-                let mut u = analyzer.analyze_unsafe_patterns(&content);
-                for i in &mut u {
-                    i.snippet = format!("{}:{}", file_name, i.snippet);
+                for mut issue in analyzer.scan_panics(&content) {
+                    issue.location = format!("{}:{}", file_name, issue.location);
+                    panic_issues.push(issue);
                 }
-                unsafe_patterns.extend(u);
-
-                for g in analyzer.scan_auth_gaps(&content) {
-                    auth_gaps.push(format!("{}:{}", file_name, g));
+                for mut issue in analyzer.scan_arithmetic_overflow(&content) {
+                    issue.location = format!("{}:{}", file_name, issue.location);
+                    arithmetic_issues.push(issue);
                 }
 
-                let mut p = analyzer.scan_panics(&content);
-                for i in &mut p {
-                    i.location = format!("{}:{}", file_name, i.location);
-                    panic_issues.push(i.clone());
+                if rule_pack != Some(RulePack::Minimal) {
+                    for mut issue in analyzer.scan_storage_collisions(&content) {
+                        issue.location = format!("{}:{}", file_name, issue.location);
+                        collisions.push(issue);
+                    }
+                    for mut issue in analyzer.analyze_unsafe_patterns(&content) {
+                        issue.snippet = format!("{}:{}", file_name, issue.snippet);
+                        unsafe_patterns.push(issue);
+                    }
+                    for mut issue in analyzer
+                        .analyze_custom_rules(&content, &analyzer.config.custom_rules)
+                    {
+                        issue.snippet = format!("{}:{}: {}", file_name, issue.line, issue.snippet);
+                        custom_matches.push(issue);
+                    }
+                    vuln_matches.extend(vuln_db.scan(&content, &file_name));
+                    for mut issue in analyzer.scan_events(&content) {
+                        issue.location = format!("{}:{}", file_name, issue.location);
+                        event_issues.push(issue);
+                    }
+                    for mut issue in analyzer.scan_unhandled_results(&content) {
+                        issue.location = format!("{}:{}", file_name, issue.location);
+                        unhandled_results.push(issue);
+                    }
+                    let mut report = analyzer.analyze_upgrade_patterns(&content);
+                    for finding in &mut report.findings {
+                        finding.location = format!("{}:{}", file_name, finding.location);
+                    }
+                    upgrade_reports.push(report);
                 }
 
-                let mut a = analyzer.scan_arithmetic_overflow(&content);
-                for i in &mut a {
-                    i.location = format!("{}:{}", file_name, i.location);
-                    arithmetic_issues.push(i.clone());
+                if rule_pack.is_none() || rule_pack == Some(RulePack::Strict) {
+                    for mut issue in analyzer.verify_smt_invariants(&content) {
+                        issue.location = format!("{}:{}", file_name, issue.location);
+                        smt_issues.push(issue);
+                    }
                 }
-
-                let mut custom =
-                    analyzer.analyze_custom_rules(&content, &analyzer.config.custom_rules);
-                for m in &mut custom {
-                    m.snippet = format!("{}:{}: {}", file_name, m.line, m.snippet);
-                }
-                custom_matches.extend(custom);
-
-                // Scan against vulnerability database
-                vuln_matches.extend(vuln_db.scan(&content, &file_name));
-
-                let mut e = analyzer.scan_events(&content);
-                for i in &mut e {
-                    i.location = format!("{}:{}", file_name, i.location);
-                }
-                event_issues.extend(e);
-
-                let mut r = analyzer.scan_unhandled_results(&content);
-                for i in &mut r {
-                    i.location = format!("{}:{}", file_name, i.location);
-                }
-                unhandled_results.extend(r);
-
-                let mut up = analyzer.analyze_upgrade_patterns(&content);
-                for f in &mut up.findings {
-                    f.location = format!("{}:{}", file_name, f.location);
-                }
-                upgrade_reports.push(up);
-
-                let mut smt = analyzer.verify_smt_invariants(&content);
-                for i in &mut smt {
-                    i.location = format!("{}:{}", file_name, i.location);
-                }
-                smt_issues.extend(smt);
             }
         }
     }
@@ -1012,4 +1040,24 @@ fn is_soroban_project(path: &Path) -> bool {
         path.to_path_buf()
     };
     cargo_toml_path.exists()
+}
+
+#[cfg(test)]
+mod named_rule_pack_config_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_nearest_preset_config_fails_instead_of_silently_enabling_every_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_file = dir.path().join(".sanctify.toml");
+        fs::write(&config_file, "enabled_rules = [\"preset:minimal\"\n").unwrap();
+
+        let error = load_config(dir.path()).err().expect("invalid preset TOML must fail");
+        assert!(error.to_string().contains("Invalid "));
+        assert!(error.to_string().contains(".sanctify.toml"));
+
+        fs::write(&config_file, "enabled_rules = [\"preset:minimal\"]\n").unwrap();
+        let parsed = load_config(dir.path()).expect("valid nearest preset config");
+        assert_eq!(select_rule_pack(&parsed).unwrap(), Some(RulePack::Minimal));
+    }
 }
