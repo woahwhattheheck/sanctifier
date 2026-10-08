@@ -34,9 +34,14 @@ def example_fixture() -> dict:
                  "location": "src/lib.rs:2147483647"},
                 {"code": "TEST_BOOL_LINE", "issue_type": "boolean location",
                  "file": "src/lib.rs", "line": True},
-                # The CLI reports panics by function only, with no line.
+                # The CLI reports panics by function only, with no line. The
+                # repeated entry is an exact duplicate and must collapse.
                 {"code": "S002", "function_name": "initialize",
                  "issue_type": "panic!", "location": f"{EXAMPLE}/src/lib.rs:initialize"},
+                {"code": "S002", "function_name": "burn_from",
+                 "issue_type": "panic!", "location": f"{EXAMPLE}/src/lib.rs:burn_from"},
+                {"code": "S002", "function_name": "burn_from",
+                 "issue_type": "panic!", "location": f"{EXAMPLE}/src/lib.rs:burn_from"},
             ],
             # Location strings exactly as `sanctifier analyze` writes them.
             "arithmetic_issues": [
@@ -154,7 +159,7 @@ def main() -> int:
                 if len(entry["fingerprint"]) != 64:
                     raise RuntimeError("Code Quality entry lacks stable SHA-256 fingerprint")
             if args.fixture:
-                if len(quality) != 5 or len(results) != 13:
+                if len(quality) != 5 or len(results) != 14:
                     raise RuntimeError("synthetic located/unlocated coverage changed")
                 located = [entry for entry in results if "locations" in entry]
                 if len(located) != 5:
@@ -185,9 +190,15 @@ def main() -> int:
                              for entry in quality if entry["check_name"] == code]
                     if lines != [line]:
                         raise RuntimeError(f"{code} must reach Code Quality once at line {line}, got {lines}")
-                # A panic reported by function name only has no line to annotate.
-                if sum(entry["ruleId"] == "S002" and "locations" not in entry for entry in results) != 1:
-                    raise RuntimeError("line-less S002 panic must remain one unlocated SARIF result")
+                # Panics reported by function name only have no line to
+                # annotate. Each function keeps its own unlocated SARIF result
+                # that names the analyzer's location; exact duplicates collapse.
+                panic_references = sorted(
+                    entry.get("properties", {}).get("analyzerLocation", "")
+                    for entry in results if entry["ruleId"] == "S002" and "locations" not in entry
+                )
+                if panic_references != [f"{EXAMPLE}/src/lib.rs:burn_from", f"{EXAMPLE}/src/lib.rs:initialize"]:
+                    raise RuntimeError(f"function-only panics must stay separate unlocated SARIF results: {panic_references}")
 
                 fingerprints = {entry["fingerprint"] for entry in quality}
                 if len(fingerprints) != len(quality):

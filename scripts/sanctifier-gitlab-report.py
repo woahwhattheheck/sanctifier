@@ -114,6 +114,15 @@ def source_location(item: dict, root: Path, scan_root: str) -> tuple[str, int] |
     return None
 
 
+def analyzer_reference(item: dict) -> str | None:
+    """The analyzer's own position text, e.g. "<file>.rs:<function>" for panics."""
+    for field in ("location", "file", "function", "snippet"):
+        value = item.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def iter_findings(report: dict):
     findings = report.get("findings")
     if not isinstance(findings, dict):
@@ -155,7 +164,10 @@ def convert(report: dict, root: Path) -> tuple[list[dict], dict]:
         severity = SEVERITIES.get(str(finding.get("severity") or "").lower())
         severity = severity or ("major" if group in HIGH_GROUPS else "minor")
         location = source_location(finding, root, scan_root)
-        identity = (code, description, location)
+        # Without a verified position, only an identical analyzer entry is a
+        # duplicate; unwraps in different functions stay separate results.
+        identity = (code, description, location if location else
+                    json.dumps(finding, sort_keys=True, default=str))
         if identity in seen:
             continue
         seen.add(identity)
@@ -191,6 +203,10 @@ def convert(report: dict, root: Path) -> tuple[list[dict], dict]:
                     "region": {"startLine": line},
                 }
             }]
+        elif analyzer_reference(finding):
+            # Keep the analyzer's own text so an unlocated result still says
+            # where it came from, without inventing a physical location.
+            sarif_result["properties"] = {"analyzerLocation": analyzer_reference(finding)}
         results.append(sarif_result)
 
     quality.sort(key=lambda x: (x["location"]["path"], x["location"]["lines"]["begin"], x["check_name"], x["description"]))
