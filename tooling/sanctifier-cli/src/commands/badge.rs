@@ -195,7 +195,9 @@ pub fn exec(args: BadgeArgs) -> anyhow::Result<()> {
         .unwrap_or_else(|| normalize_path_for_markdown(&args.svg_output));
     let markdown = format!(
         "![{}: {}]({})",
-        presentation.label, presentation.value, markdown_url
+        presentation.label,
+        presentation.value,
+        markdown_destination(&markdown_url)
     );
 
     if let Some(md_path) = args.markdown_output {
@@ -363,6 +365,27 @@ fn generate_badge_svg(label: &str, status: &str, status_color: &str) -> String {
 fn text_width(text: &str) -> usize {
     let padded = (text.chars().count() * 7) + 10;
     padded.max(28)
+}
+
+/// Serialize a Markdown image destination without changing the underlying URL.
+/// CommonMark angle destinations preserve spaces and parentheses; escaping
+/// punctuation prevents a literal URL entity from changing on parse.
+fn markdown_destination(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 2);
+    result.push('<');
+    for ch in value.chars() {
+        match ch {
+            '\\' | '<' | '>' | '&' => {
+                result.push('\\');
+                result.push(ch);
+            }
+            '\n' => result.push_str("%0A"),
+            '\r' => result.push_str("%0D"),
+            _ => result.push(ch),
+        }
+    }
+    result.push('>');
+    result
 }
 
 fn normalize_path_for_markdown(path: &Path) -> String {
