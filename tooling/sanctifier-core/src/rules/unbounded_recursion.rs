@@ -157,6 +157,10 @@ impl RecursionFacts<'_> {
 }
 
 impl<'ast> Visit<'ast> for RecursionFacts<'_> {
+    fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {
+        // A nested function has its own calls and depth bounds.
+    }
+
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.record_guard(&node.cond);
         visit::visit_expr_if(self, node);
@@ -188,6 +192,10 @@ struct GuardCollector<'a> {
 }
 
 impl<'ast> Visit<'ast> for GuardCollector<'_> {
+    fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {
+        // Guards inside a nested function do not bound the enclosing function.
+    }
+
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
         if is_comparison(&node.op) {
             for param in self.depth_params {
@@ -283,6 +291,10 @@ fn expr_mentions_ident(expr: &Expr, name: &str) -> bool {
     }
 
     impl<'ast> Visit<'ast> for IdentUse<'_> {
+        fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {
+            // A nested function's identifiers are outside this expression.
+        }
+
         fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
             if node.path.is_ident(self.name) {
                 self.found = true;
@@ -331,4 +343,74 @@ fn has_cfg_test(attrs: &[Attribute]) -> bool {
             _ => false,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unused_nested_functions_do_not_change_enclosing_recursion_facts() {
+        let source = r#"
+fn clean_outer() {
+    fn unused() {
+        clean_outer();
+    }
+}
+
+fn poisoned_outer(depth: u32) {
+    fn unused(depth: u32) {
+        if depth >= 8 {
+            return;
+        }
+        poisoned_outer(depth + 1);
+    }
+    poisoned_outer(depth);
+}
+
+fn condition_guard(depth: u32) {
+    if {
+        fn unused(depth: u32) {
+            if depth < 10 {}
+        }
+        true
+    } {
+        condition_guard(depth + 1);
+    }
+}
+
+fn condition_ident(depth: u32) {
+    if ({
+        fn unused(depth: u32) {
+            let _ = depth;
+        }
+        1
+    } < 10) {
+        condition_ident(depth + 1);
+    }
+}
+
+fn bounded_control(depth: u32) {
+    if depth >= 8 {
+        return;
+    }
+    bounded_control(depth + 1);
+}
+"#;
+        syn::parse_str::<syn::File>(source).expect("valid nested-function fixture");
+        let findings = UnboundedRecursionRule.check(source);
+        let owners: Vec<_> = findings
+            .iter()
+            .map(|finding| finding.location.split_once(':').unwrap().0)
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["poisoned_outer", "condition_guard", "condition_ident"],
+            "nested helper facts must not create or hide enclosing findings: {findings:#?}"
+        );
+        for finding in findings {
+            assert_eq!(finding.rule_name, UNBOUNDED_RECURSION);
+            assert_eq!(finding.severity, Severity::Error);
+        }
+    }
 }
