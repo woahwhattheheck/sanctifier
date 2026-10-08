@@ -98,7 +98,14 @@ fn regressions(baseline: &Baseline, current: &Baseline, percent: u64) -> Vec<Str
             ),
         ] {
             // Exact integer comparison includes the threshold; zero-to-positive always fails.
-            if u128::from(after) * 100 > u128::from(before) * (100 + u128::from(percent)) {
+            // The CLI accepts any u64 threshold. A large baseline multiplied
+            // by a large threshold can exceed u128, while after * 100
+            // cannot. Saturating the unrepresentably high allowed limit
+            // preserves the exact inequality without panicking or wrapping.
+            let permitted_scaled = u128::from(before)
+                .checked_mul(100 + u128::from(percent))
+                .unwrap_or(u128::MAX);
+            if u128::from(after) * 100 > permitted_scaled {
                 failures.push(format!(
                     "{name}: {metric} {before} -> {after} exceeds {percent}%"
                 ));
@@ -165,5 +172,42 @@ fn main() {
             eprintln!("cost gate: {error}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maximum_valid_threshold_does_not_overflow() {
+        let name = "contract.rs::Token::transfer".to_string();
+        let source = "contract.rs".to_string();
+        let baseline = Baseline {
+            schema_version: 1,
+            sources: vec![source.clone()],
+            functions: BTreeMap::from([(
+                name.clone(),
+                Cost {
+                    estimated_instructions: u64::MAX - 1,
+                    estimated_memory_bytes: u64::MAX - 1,
+                },
+            )]),
+        };
+        let current = Baseline {
+            schema_version: 1,
+            sources: vec![source],
+            functions: BTreeMap::from([(
+                name,
+                Cost {
+                    estimated_instructions: u64::MAX,
+                    estimated_memory_bytes: u64::MAX,
+                },
+            )]),
+        };
+
+        // A mathematically enormous allowed threshold permits this tiny
+        // increase. Debug and release builds must never overflow/wrap.
+        assert!(regressions(&baseline, &current, u64::MAX).is_empty());
     }
 }
