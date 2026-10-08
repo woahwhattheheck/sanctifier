@@ -451,6 +451,32 @@ fn test_analyze_profile_works_with_json_output() {
 }
 
 #[test]
+fn test_analyze_fails_closed_on_corrupt_error_abi_baseline() {
+    let temp_dir = tempdir().unwrap();
+    let project = temp_dir.path();
+    fs::create_dir(project.join("src")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\\nname = \\"abi-fixture\\"\\nversion = \\"0.1.0\\"\\n[dependencies]\\nsoroban-sdk = \\"22\\"\\n"
+            .replace("\\n", "\n")
+            .replace("\\\"", "\""),
+    ).unwrap();
+    fs::write(
+        project.join("src/error.rs"),
+        "#[contracterror]\\n#[repr(u32)]\\npub enum Error { A = 1, B }\\n".replace("\\n", "\n"),
+    ).unwrap();
+    fs::write(project.join(".sanctify-baseline.json"), "{ invalid JSON").unwrap();
+
+    Command::cargo_bin("sanctifier")
+        .unwrap()
+        .args(["analyze", "--format", "json"])
+        .arg(project)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("failed to load Sanctifier baseline"));
+}
+
+#[test]
 fn test_analyze_uses_stored_error_repr_baseline() {
     let temp_dir = tempdir().unwrap();
     let project = temp_dir.path();
