@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "estimates": {
+    "contracts/vulnerable-contract/src/lib.rs::fail_explicitly": {
+      "instructions": 60,
+      "memory_bytes": 32
+    },
+    "contracts/vulnerable-contract/src/lib.rs::set_admin": {
+      "instructions": 1110,
+      "memory_bytes": 64
+    },
+    "contracts/vulnerable-contract/src/lib.rs::set_admin_secure": {
+      "instructions": 2197,
+      "memory_bytes": 160
+    }
+  }
+}
