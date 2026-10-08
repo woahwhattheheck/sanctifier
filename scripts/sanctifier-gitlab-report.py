@@ -17,7 +17,16 @@ import re
 import sys
 from urllib.parse import quote
 
-SOURCE_LOCATION = re.compile(r"(?P<path>(?:[A-Za-z]:)?[^:\r\n]+?\.rs):(?:line\s*)?(?P<line>\d+)", re.I)
+# The analyzer writes "<file>.rs:<line>", "<file>.rs:line <n>" and, for
+# arithmetic, unhandled-result and storage-collision findings,
+# "<file>.rs:<function or key kind>:<line>". The middle segment must start
+# with a letter, so "<file>.rs:12:34" still reports line 12.
+SOURCE_LOCATION = re.compile(
+    r"(?P<path>(?:[A-Za-z]:)?[^:\r\n]+?\.rs):(?:[A-Za-z_][\w#-]*:)?(?:line\s*)?(?P<line>\d+)", re.I
+)
+# Findings with an integer "line" field name the file as a bare path or as
+# the prefix of a snippet ("<file>.rs:<code>", e.g. unsafe patterns).
+SOURCE_PREFIX = re.compile(r"^\s*(?P<path>(?:[A-Za-z]:)?[^:\r\n]+?\.rs)(?::|\s*$)", re.I)
 HIGH_GROUPS = {"auth_gaps", "panic_issues", "arithmetic_issues", "smt_issues"}
 SEVERITIES = {
     "critical": "blocker", "blocker": "blocker",
@@ -97,8 +106,9 @@ def source_location(item: dict, root: Path, scan_root: str) -> tuple[str, int] |
                 line = int(match["line"])
                 if verified_line(root, path, line):
                     return path, line
-        if value.strip().endswith(".rs") and type(item.get("line")) is int:
-            path = path_in_repo(value, root, scan_root)
+        prefix = SOURCE_PREFIX.match(value)
+        if prefix and type(item.get("line")) is int:
+            path = path_in_repo(prefix["path"], root, scan_root)
             if path and verified_line(root, path, item["line"]):
                 return path, item["line"]
     return None
