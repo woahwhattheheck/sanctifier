@@ -32,7 +32,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SANCTIFIER_BIN: ./target/release/sanctifier
-          SANCTIFIER_TARGET: ./contracts/example
+          SANCTIFIER_TARGET: ./contracts/vulnerable-contract
 ```
 
 Adjust the target path to a Soroban project in your repository. On forked PRs, default GitHub tokens may not have PR-write permissions; use the repository's approved PR-comment publishing workflow, not secrets passed to untrusted PR code. For an external project, install the CLI and adjust build/path steps accordingly.
