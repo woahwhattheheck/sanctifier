@@ -194,9 +194,22 @@ pub fn exec(args: AnalyzeArgs) -> anyhow::Result<()> {
     }
 
     let project_root = if path.is_file() {
-        path.parent()
+        // A file-scoped scan can be nested under src/ even when the baseline
+        // was captured at the project root. Search ancestors for that exact
+        // baseline before comparing ABI identities; otherwise the previous
+        // parent-only choice silently skips the snapshot.
+        let file_dir = path.parent()
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut ancestor = file_dir.clone();
+        loop {
+            if ancestor.join(".sanctify-baseline.json").is_file() {
+                break ancestor;
+            }
+            if !ancestor.pop() {
+                break file_dir;
+            }
+        }
     } else {
         path.to_path_buf()
     };
