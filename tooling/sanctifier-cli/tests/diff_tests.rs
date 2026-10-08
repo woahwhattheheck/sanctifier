@@ -227,4 +227,18 @@ fn test_analyze_since_matches_moved_findings_and_flags_new_ones() {
     assert!(new_result["summary"]["added_count"].as_u64().unwrap() >= 1);
     assert_eq!(new_result["removed"].as_array().unwrap().len(), 0);
     assert_eq!(new_result["persisting"].as_array().unwrap().len(), 0);
+
+    // The nonzero exit must not leave a detached git worktree behind.
+    // Git metadata is the source of truth even when temp files are deleted.
+    let registered = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(registered.status.success());
+    let worktrees = String::from_utf8_lossy(&registered.stdout)
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(worktrees, 1, "nonzero --since leaked a temporary git worktree");
 }
