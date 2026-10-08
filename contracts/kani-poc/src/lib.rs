@@ -6,6 +6,8 @@
 //! logic into functions that can be verified with Kani, while the contract layer that uses
 //! `Env`, `Address`, `Symbol`, etc. remains unverified due to Host type limitations.
 
+pub mod admin_auth;
+
 use soroban_sdk::{contract, contractimpl, symbol_short, Env, Symbol};
 
 // ── Token initialisation pure logic (verified with Kani) ─────────────────────
