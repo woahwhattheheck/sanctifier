@@ -906,13 +906,8 @@ fn walk_dir(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            // Skip ignore_paths
-            let is_ignored = analyzer
-                .config
-                .ignore_paths
-                .iter()
-                .any(|p| path.ends_with(p));
-            if is_ignored || analyzer.config.directory_excluded(root, &path) {
+            // One shared filter covers ignore fragments and excluded glob subtrees.
+            if analyzer.config.directory_excluded(root, &path) {
                 continue;
             }
 
