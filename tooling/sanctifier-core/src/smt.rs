@@ -620,6 +620,215 @@ impl<'ctx> SmtProver<'ctx> {
     }
 }
 
+// ── Guarded account-state transition proofs (issue #343) ─────────────────────
+
+/// A symbolic token operation. The two modeled accounts are distinct;
+/// all other accounts retain their non-negative pre-state balances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BalanceTransition {
+    Transfer,
+    Mint,
+    Burn,
+}
+
+impl BalanceTransition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transfer => "transfer",
+            Self::Mint => "mint",
+            Self::Burn => "burn",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "transfer" => Some(Self::Transfer),
+            "mint" => Some(Self::Mint),
+            "burn" => Some(Self::Burn),
+            _ => None,
+        }
+    }
+}
+
+impl<'ctx> SmtProver<'ctx> {
+    /// Discharge the negation of the post-state non-negativity invariant.
+    /// Pre-state balances/amount/supply are unsigned 64-bit values, while
+    /// Z3's unbounded integers make underflow observable. A false guard
+    /// deliberately removes spend preconditions for a SAT counterexample.
+    /// This proves the transition relation, not arbitrary Rust contract code.
+    pub fn prove_balance_transition(
+        &self,
+        transition: BalanceTransition,
+        guarded: bool,
+    ) -> ProofResult {
+        use z3::ast::Bool;
+
+        let start = Instant::now();
+        let solver = Solver::new(self.ctx);
+        let zero = Int::from_i64(self.ctx, 0);
+        let max = Int::from_u64(self.ctx, u64::MAX);
+        let from = Int::new_const(self.ctx, "transition_from_balance");
+        let to = Int::new_const(self.ctx, "transition_to_balance");
+        let amount = Int::new_const(self.ctx, "transition_amount");
+        let supply = Int::new_const(self.ctx, "transition_total_supply");
+
+        for input in [&from, &to, &amount, &supply] {
+            solver.assert(&input.ge(&zero));
+            solver.assert(&input.le(&max));
+        }
+
+        // Sender/receiver represent distinct symbolic accounts.
+        // Do not assert non-negative post-state; that is what Z3 must prove.
+        let (post_from, post_to, post_supply) = match transition {
+            BalanceTransition::Transfer => {
+                if guarded {
+                    solver.assert(&amount.le(&from));
+                }
+                let recipient = Int::add(self.ctx, &[&to, &amount]);
+                solver.assert(&recipient.le(&max));
+                (
+                    Int::sub(self.ctx, &[&from, &amount]),
+                    recipient,
+                    supply.clone(),
+                )
+            }
+            BalanceTransition::Mint => {
+                let recipient = Int::add(self.ctx, &[&to, &amount]);
+                let new_supply = Int::add(self.ctx, &[&supply, &amount]);
+                solver.assert(&recipient.le(&max));
+                solver.assert(&new_supply.le(&max));
+                (from.clone(), recipient, new_supply)
+            }
+            BalanceTransition::Burn => {
+                if guarded {
+                    solver.assert(&amount.le(&from));
+                    solver.assert(&amount.le(&supply));
+                }
+                (
+                    Int::sub(self.ctx, &[&from, &amount]),
+                    to.clone(),
+                    Int::sub(self.ctx, &[&supply, &amount]),
+                )
+            }
+        };
+
+        let from_negative = post_from.lt(&zero);
+        let to_negative = post_to.lt(&zero);
+        let supply_negative = post_supply.lt(&zero);
+        solver.assert(&Bool::or(
+            self.ctx,
+            &[&from_negative, &to_negative, &supply_negative],
+        ));
+
+        let status = solver.check();
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let invariant = format!(
+            "balance_non_negative_{}_{}",
+            transition.as_str(),
+            if guarded { "guarded" } else { "unchecked" }
+        );
+
+        match status {
+            SatResult::Unsat => ProofResult {
+                invariant,
+                status: ProofStatus::Proved,
+                message: format!(
+                    "UNSAT: no valid {} transition can make modeled balances or supply negative.",
+                    transition.as_str()
+                ),
+                counterexample: None,
+                duration_ms,
+            },
+            SatResult::Sat => {
+                let counterexample = solver.get_model().map(|model| {
+                    let value = |term: &Int| {
+                        model
+                            .eval(term, true)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "<unavailable>".to_string())
+                    };
+                    let from_before = value(&from);
+                    let to_before = value(&to);
+                    let amount_value = value(&amount);
+                    let supply_before = value(&supply);
+                    let from_after = value(&post_from);
+                    let to_after = value(&post_to);
+                    let supply_after = value(&post_supply);
+                    Counterexample {
+                        variables: vec![
+                            ("from_balance_before".into(), from_before.clone()),
+                            ("to_balance_before".into(), to_before.clone()),
+                            ("amount".into(), amount_value.clone()),
+                            ("total_supply_before".into(), supply_before),
+                            ("from_balance_after".into(), from_after.clone()),
+                            ("to_balance_after".into(), to_after.clone()),
+                            ("total_supply_after".into(), supply_after.clone()),
+                        ],
+                        violated_assertion: "all post-state balances and supply >= 0".into(),
+                        call_sequence: format!(
+                            "{}(from_balance={}, to_balance={}, amount={}) -> from={}, to={}, supply={}",
+                            transition.as_str(),
+                            from_before,
+                            to_before,
+                            amount_value,
+                            from_after,
+                            to_after,
+                            supply_after
+                        ),
+                    }
+                });
+                ProofResult {
+                    invariant,
+                    status: ProofStatus::Violated,
+                    message: format!(
+                        "SAT: {} can violate non-negativity; see Z3 witness.",
+                        transition.as_str()
+                    ),
+                    counterexample,
+                    duration_ms,
+                }
+            }
+            SatResult::Unknown => ProofResult {
+                invariant,
+                status: ProofStatus::Unknown,
+                message: "UNKNOWN: Z3 timed out or could not decide this proof.".into(),
+                counterexample: None,
+                duration_ms,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod guarded_balance_transition_tests {
+    use super::*;
+
+    #[test]
+    fn guarded_moves_prove_and_missing_transfer_guard_fails() {
+        let cfg = configured_z3_config(DEFAULT_Z3_TIMEOUT_MS);
+        let ctx = Context::new(&cfg);
+        let prover = SmtProver::new(&ctx);
+        for operation in [
+            BalanceTransition::Transfer,
+            BalanceTransition::Mint,
+            BalanceTransition::Burn,
+        ] {
+            let result = prover.prove_balance_transition(operation, true);
+            assert_eq!(result.status, ProofStatus::Proved, "{:?}", operation);
+        }
+        let unsafe_result =
+            prover.prove_balance_transition(BalanceTransition::Transfer, false);
+        assert_eq!(unsafe_result.status, ProofStatus::Violated);
+        let witness = unsafe_result.counterexample.expect("SAT must carry model");
+        let sender_after = witness
+            .variables
+            .iter()
+            .find(|(name, _)| name == "from_balance_after")
+            .expect("model must contain resulting sender balance");
+        assert!(sender_after.1.starts_with('-'), "sender must be negative");
+    }
+}
+
 // ── Benchmark infrastructure (unchanged) ─────────────────────────────────────
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
