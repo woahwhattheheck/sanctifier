@@ -19,9 +19,14 @@ steps:
   - bash: |
       set -euo pipefail
       sudo apt-get update
-      sudo apt-get install -y libz3-dev libdbus-1-dev pkg-config
+      sudo apt-get install -y clang libclang-dev libz3-dev libdbus-1-dev pkg-config
       rustup toolchain install 1.85.0 --profile minimal
-      cargo +1.85.0 install --locked --git https://github.com/Centurylong/sanctifier sanctifier-cli
+
+      # sanctifier-cli owns a nested Cargo workspace, excluded from the root.
+      # A git-package install cannot reliably find that nested package.
+      sanctifier_src="$(Agent.TempDirectory)/sanctifier-source"
+      git clone --depth 1 https://github.com/Centurylong/sanctifier.git "$sanctifier_src"
+      cargo +1.85.0 install --locked --path "$sanctifier_src/tooling/sanctifier-cli"
     displayName: Install Sanctifier and system dependencies
 
   - bash: |
