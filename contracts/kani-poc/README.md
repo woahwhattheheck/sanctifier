@@ -18,11 +18,13 @@ With `cargo-kani` installed and the repository's Rust dependencies available:
 
 ```sh
 cargo kani -p kani-poc-contract --harness verify_admin_write_requires_current_authenticated_admin
+cargo kani -p kani-poc-contract --harness verify_old_admin_is_revoked_after_rotation
 cargo kani -p kani-poc-contract --harness verify_missing_require_auth_is_caught
 cargo test -p kani-poc-contract admin_write_requires_matching_admin_and_host_auth
 ```
 
 - `verify_admin_write_requires_current_authenticated_admin`: Kani should prove rejection of any unauthenticated or mismatching caller, while preserving the authorized transition.
+- `verify_old_admin_is_revoked_after_rotation`: an administrator's valid initial rotation must revoke that former principal immediately, even if a later Host call verifies the former signature.
 - `verify_missing_require_auth_is_caught`: expected **negative control**, marked `#[kani::should_panic]`. It gives the buggy variant a matching supplied admin ID but no Host authorization; Kani should find a failing assertion when the buggy version writes anyway. This is not a claim that the buggy function is safe.
 - The single Rust unit test checks both denial reasons, one allowed update, and the negative-control write.
 
