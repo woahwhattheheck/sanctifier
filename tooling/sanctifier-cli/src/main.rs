@@ -22,6 +22,8 @@ struct Cli {
 pub enum Commands {
     /// Analyze a Soroban contract for vulnerabilities
     Analyze(commands::analyze::AnalyzeArgs),
+    /// Estimate per-function instruction/CPU cost proxies (not Soroban fees)
+    Gas(commands::gas::GasArgs),
     /// Snapshot current findings into .sanctify-baseline.json (use --update to refresh)
     Baseline(commands::baseline::BaselineArgs),
     /// Generate (or verify) a zero-knowledge attestation that a scan passed a score threshold
@@ -103,6 +105,9 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Gas(args) => {
+            commands::gas::exec(args)?;
+        }
         Commands::Analyze(args) => {
             if args.format != "json" {
                 branding::print_logo();
