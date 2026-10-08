@@ -34,6 +34,7 @@ pub mod unbounded_event_emission;
 pub mod unbounded_input_length;
 pub mod unbounded_return;
 pub mod unbounded_storage;
+pub mod unbounded_storage_loop;
 pub mod unhandled_result;
 pub mod unsigned_underflow;
 pub mod unused_variable;
@@ -241,6 +242,7 @@ impl RuleRegistry {
         registry.register(init_hardcoded_admin::InitHardcodedAdminRule::new());
         registry.register(shift_overflow::ShiftOverflowRule::new());
         registry.register(unbounded_storage::UnboundedStorageRule::new());
+        registry.register(unbounded_storage_loop::UnboundedStorageLoopRule::new());
         registry.register(view_panic::ViewPanicRule::new());
         registry.register(allowance_race::AllowanceRaceRule::new());
         registry.register(state_write_in_view::StateWriteInViewRule::new());
@@ -269,6 +271,26 @@ impl RuleRegistry {
 #[cfg(test)]
 mod rule_timing_tests {
     use super::*;
+
+    #[test]
+    fn default_registry_detects_high_severity_unbounded_storage_loops() {
+        let registry = RuleRegistry::with_default_rules();
+        assert!(registry.available_rules().contains(&"unbounded_storage_loop"));
+        let source = r#"
+            #[contractimpl]
+            impl Contract {
+                pub fn pay_all(env: Env) {
+                    let holders: Vec<Address> = env.storage().persistent()
+                        .get(&DataKey::Holders).unwrap();
+                    for holder in holders.iter() { pay(&env, &holder); }
+                }
+            }
+        "#;
+        let violations = registry.run_by_name(source, "unbounded_storage_loop");
+        assert_eq!(violations.len(), 1, "{violations:#?}");
+        assert_eq!(violations[0].rule_name, crate::finding_codes::UNBOUNDED_LOOP);
+        assert_eq!(violations[0].severity, Severity::Error);
+    }
 
     #[test]
     fn run_all_with_timings_returns_one_timing_per_rule_in_order() {
