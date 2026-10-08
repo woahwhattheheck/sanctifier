@@ -396,6 +396,29 @@ mod tests {
     }
 
     #[test]
+    fn nested_local_admin_function_does_not_create_outer_privilege() {
+        let source = r#"
+            impl Contract {
+                pub fn balance(user: Address) {
+                    user.require_auth();
+                    fn internal_upgrade(admin: Address, env: Env) {
+                        admin.require_auth();
+                        env.deployer().update_current_contract_wasm(hash);
+                    }
+                }
+                pub fn upgrade(authority: Address, env: Env) {
+                    authority.require_auth();
+                    env.deployer().update_current_contract_wasm(hash);
+                }
+            }
+        "#;
+        let findings = CentralizationRule::new().check(source);
+        assert_eq!(findings.len(), 1, "local declarations are not outer admin powers");
+        assert!(findings[0].message.contains("Admin-gated `upgrade`"));
+        assert!(!findings[0].message.contains("balance"));
+    }
+
+    #[test]
     fn reports_admin_role_guard_and_low_impact_custom_power() {
         let source = r#"
             impl Contract {
