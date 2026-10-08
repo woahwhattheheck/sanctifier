@@ -125,11 +125,11 @@ impl<'ast> Visit<'ast> for FnComplexityVisitor {
         syn::visit::visit_expr_loop(self, node);
         self.exit();
     }
-    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
-        self.cyclomatic += 1;
-        self.enter();
-        syn::visit::visit_expr_closure(self, node);
-        self.exit();
+    fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {
+        // A closure declares a separate callable: its branches only execute
+        // when invoked, not when the enclosing function constructs it.
+        // Report per named function without attributing deferred closure body
+        // branches or nesting to the enclosing function's complexity score.
     }
     // &&, || add logical branches
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
