@@ -92,6 +92,9 @@ identifiers are:
 > To select a *working* rule pack, replace the entire list with one
 > `preset:<name>` selector. Mixing selectors with individual family names or
 > selecting an unknown preset returns an error and nonzero exit status.
+> A malformed or unreadable nearest `.sanctify.toml` also fails explicitly:
+> it cannot silently fall back to the all-detectors default and override a
+> requested minimal/recommended security or performance profile.
 
 #### Named scan presets
 
