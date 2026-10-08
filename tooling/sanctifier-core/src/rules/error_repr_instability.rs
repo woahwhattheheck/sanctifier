@@ -72,14 +72,21 @@ impl ErrorReprInstabilityRule {
         }
     }
 
-    fn capture_variants(source: &str) -> Vec<CapturedVariant> {
-        let file = match crate::parse_cache::parse_cached(source) {
-            Some(file) => (*file).clone(),
-            None => return Vec::new(),
-        };
-
-        let mut captured = Vec::new();
-        for item in &file.items {
+    fn capture_items(items: &[Item], scope: &str, captured: &mut Vec<CapturedVariant>) {
+        for item in items {
+            // Recurse through inline modules. External mod declarations
+            // are captured separately when their source files are scanned.
+            if let Item::Mod(module) = item {
+                if let Some((_, children)) = &module.content {
+                    let nested_scope = if scope.is_empty() {
+                        module.ident.to_string()
+                    } else {
+                        format!("{}::{}", scope, module.ident)
+                    };
+                    Self::capture_items(children, &nested_scope, captured);
+                }
+                continue;
+            }
             let Item::Enum(enum_item) = item else {
                 continue;
             };
@@ -89,9 +96,14 @@ impl ErrorReprInstabilityRule {
                 continue;
             }
 
-            let enum_name = enum_item.ident.to_string();
+            // Include module namespace so similarly named Error enums in
+            // different modules cannot inherit each other's baseline codes.
+            let enum_name = if scope.is_empty() {
+                enum_item.ident.to_string()
+            } else {
+                format!("{}::{}", scope, enum_item.ident)
+            };
             let mut next = Some(0u32);
-
             for variant in &enum_item.variants {
                 let value = match &variant.discriminant {
                     Some((_, expr)) => {
@@ -105,16 +117,9 @@ impl ErrorReprInstabilityRule {
                         implicit
                     }
                 };
-
-                // A non-literal explicit discriminant makes only itself and
-                // following implicit values unknowable. A later literal
-                // discriminant re-establishes the sequence, so keep capturing
-                // independently resolvable variants instead of dropping the
-                // whole enum.
                 let Some(value) = value else {
                     continue;
                 };
-
                 captured.push(CapturedVariant {
                     enum_name: enum_name.clone(),
                     variant: variant.ident.to_string(),
@@ -123,7 +128,15 @@ impl ErrorReprInstabilityRule {
                 });
             }
         }
+    }
 
+    fn capture_variants(source: &str) -> Vec<CapturedVariant> {
+        let file = match crate::parse_cache::parse_cached(source) {
+            Some(file) => (*file).clone(),
+            None => return Vec::new(),
+        };
+        let mut captured = Vec::new();
+        Self::capture_items(&file.items, "", &mut captured);
         captured
     }
 }
@@ -235,6 +248,46 @@ mod tests {
         let baseline = capture_error_repr_baseline(old, "src/lib.rs");
         let rule = ErrorReprInstabilityRule::with_baseline("src/lib.rs", &baseline);
         assert!(rule.check(current).is_empty());
+    }
+
+    #[test]
+    fn nested_module_error_abi_is_scoped_and_detects_drift() {
+        let old = r#"
+            mod ledger {
+                mod errors {
+                    #[contracterror]
+                    #[repr(u32)]
+                    pub enum Error { Missing = 1, Denied = 2 }
+                }
+            }
+            mod token {
+                #[contracterror]
+                #[repr(u32)]
+                pub enum Error { Missing = 10, Denied = 11 }
+            }
+        "#;
+        let new = r#"
+            mod ledger {
+                mod errors {
+                    #[contracterror]
+                    #[repr(u32)]
+                    pub enum Error { Missing = 1, Denied = 3 }
+                }
+            }
+            mod token {
+                #[contracterror]
+                #[repr(u32)]
+                pub enum Error { Missing = 10, Denied = 11 }
+            }
+        "#;
+        let baseline = capture_error_repr_baseline(old, "src/lib.rs");
+        assert_eq!(baseline.len(), 4);
+        assert!(baseline.iter().any(|e| e.enum_name == "ledger::errors::Error"));
+        assert!(baseline.iter().any(|e| e.enum_name == "token::Error"));
+        let rule = ErrorReprInstabilityRule::with_baseline("src/lib.rs", &baseline);
+        let findings = rule.check(new);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].message.contains("ledger::errors::Error::Denied"));
     }
 
     #[test]
