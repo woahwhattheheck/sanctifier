@@ -68,6 +68,16 @@ impl FnComplexityVisitor {
 }
 
 impl<'ast> Visit<'ast> for FnComplexityVisitor {
+    fn visit_stmt(&mut self, node: &'ast syn::Stmt) {
+        // A nested fn, impl or other item only declares future callables:
+        // these bodies do not run when the enclosing function is called.
+        // Count eligible nested functions independently in FileVisitor.
+        if matches!(node, syn::Stmt::Item(_)) {
+            return;
+        }
+        syn::visit::visit_stmt(self, node);
+    }
+
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.cyclomatic += 1;
         self.enter();
