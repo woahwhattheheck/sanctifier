@@ -43,24 +43,34 @@ impl AuthSubjectRule {
             return Vec::new();
         }
 
-        // A normal transfer may credit an unauthenticated recipient. Only
-        // report if no affected owner resolves to an authorized principal.
-        if flow
-            .effects
-            .iter()
-            .any(|(owners, _)| !owners.is_disjoint(&flow.authorized))
-        {
-            return Vec::new();
-        }
+        // A normal transfer may credit an unauthenticated recipient; do
+        // not flag its recipient just because a different party signs.
+        // However, a debit/delete of a storage-sourced victim remains unsafe
+        // even if the same function *also* credits the authenticated caller.
+        // Evaluating just the union of effect owners would miss that theft.
+        let harmful_mismatch = flow.effects.iter().find(|effect| {
+            effect.owner_must_authorize
+                && effect.owners.is_disjoint(&flow.authorized)
+                && effect.owners.iter().any(|s| matches!(s, Subject::Loaded(_)))
+        });
 
-        let Some((owners, line)) = flow
-            .effects
-            .iter()
-            .find(|(owners, _)| owners.iter().any(|s| matches!(s, Subject::Loaded(_))))
-        else {
-            return Vec::new();
+        let effect = if let Some(effect) = harmful_mismatch {
+            effect
+        } else {
+            if flow.effects.iter().any(|effect| {
+                !effect.owners.is_disjoint(&flow.authorized)
+            }) {
+                return Vec::new();
+            }
+            let Some(effect) = flow.effects.iter().find(|effect| {
+                effect.owners.iter().any(|s| matches!(s, Subject::Loaded(_)))
+            }) else {
+                return Vec::new();
+            };
+            effect
         };
-        let owner = owners.iter().find(|s| matches!(s, Subject::Loaded(_))).unwrap();
+        let owner = effect.owners.iter().find(|s| matches!(s, Subject::Loaded(_))).unwrap();
+        let line = effect.line;
         let signer = flow.authorized.iter().next().unwrap();
 
         vec![RuleViolation::new(
@@ -134,13 +144,21 @@ impl<'ast> Visit<'ast> for FunctionVisitor<'_> {
     }
 }
 
+struct OwnerEffect {
+    owners: BTreeSet<Subject>,
+    line: usize,
+    // A balance debit/burn/withdrawal or storage removal requires a
+    // distinct owner consent regardless of unrelated credited balances.
+    owner_must_authorize: bool,
+}
+
 #[derive(Default)]
 struct SubjectFlow {
     // Aliases retain the origin (entrypoint argument or storage-loaded Address).
     subjects: BTreeMap<String, Subject>,
     storage_handles: BTreeSet<String>,
     authorized: BTreeSet<Subject>,
-    effects: Vec<(BTreeSet<Subject>, usize)>,
+    effects: Vec<OwnerEffect>,
 }
 
 impl SubjectFlow {
@@ -224,7 +242,11 @@ impl<'ast> Visit<'ast> for SubjectFlow {
             if let Some(key) = call.args.first() {
                 let owners = self.owners_in(key);
                 if !owners.is_empty() {
-                    self.effects.push((owners, call.span().start().line));
+                    self.effects.push(OwnerEffect {
+                        owners,
+                        line: call.span().start().line,
+                        owner_must_authorize: call.method == "remove",
+                    });
                 }
             }
         }
@@ -243,7 +265,11 @@ impl<'ast> Visit<'ast> for SubjectFlow {
         )) {
             let owners = call.args.iter().flat_map(|arg| self.owners_in(arg)).collect();
             if !owners.is_empty() {
-                self.effects.push((owners, call.span().start().line));
+                self.effects.push(OwnerEffect {
+                    owners,
+                    line: call.span().start().line,
+                    owner_must_authorize: helper.as_deref() != Some("set_balance"),
+                });
             }
         }
         visit::visit_expr_call(self, call);
@@ -343,6 +369,38 @@ mod tests {
                     from.require_auth();
                     e.storage().persistent().set(&from, &0);
                     e.storage().persistent().set(&to, &1);
+                }
+            }
+        "#;
+        assert!(AuthSubjectRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn reports_victim_debit_even_when_attacker_gets_a_credit() {
+        let source = r#"
+            impl Vault {
+                pub fn siphon(e: Env, attacker: Address, amount: i128) {
+                    attacker.require_auth();
+                    let victim: Address = e.storage().persistent().get(&7).unwrap();
+                    debit(&e, &victim, amount);
+                    e.storage().persistent().set(&attacker, &amount);
+                }
+            }
+        "#;
+        let hits = AuthSubjectRule::new().check(source);
+        assert_eq!(hits.len(), 1, "{hits:#?}");
+        assert!(hits[0].message.contains("victim"));
+    }
+
+    #[test]
+    fn ignores_signed_sender_and_storage_loaded_recipient_credit() {
+        let source = r#"
+            impl Vault {
+                pub fn reward(e: Env, sender: Address) {
+                    sender.require_auth();
+                    let recipient: Address = e.storage().persistent().get(&7).unwrap();
+                    e.storage().persistent().set(&sender, &0i128);
+                    e.storage().persistent().set(&recipient, &10i128);
                 }
             }
         "#;
