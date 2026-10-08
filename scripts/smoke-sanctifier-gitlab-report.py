@@ -97,8 +97,8 @@ def main() -> int:
             if args.fixture:
                 if len(quality) != 1 or len(results) != 2:
                     raise RuntimeError("synthetic located/unlocated coverage changed")
-                if "locations" in results[1]:
-                    raise RuntimeError("fabricated SARIF location for unlocated finding")
+                if sum("locations" in entry for entry in results) != 1:
+                    raise RuntimeError("synthetic fixture must produce exactly one located SARIF result")
             print(
                 f"PASS ({'synthetic converter fixture' if args.fixture else 'real SEP-41 analyzer'}): "
                 f"{len(quality)} located Code Quality entries, {len(results)} SARIF results"
