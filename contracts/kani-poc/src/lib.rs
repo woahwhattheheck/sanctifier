@@ -6,7 +6,7 @@
 //! logic into functions that can be verified with Kani, while the contract layer that uses
 //! `Env`, `Address`, `Symbol`, etc. remains unverified due to Host type limitations.
 
-use soroban_sdk::{contract, contractimpl, symbol_short, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env};
 
 // ── Token initialisation pure logic (verified with Kani) ─────────────────────
 //
@@ -26,6 +26,44 @@ pub fn initialize_pure(is_initialized: bool) -> Result<(), &'static str> {
         return Err("already initialized");
     }
     Ok(())
+}
+
+// Kani checks the pure role/signature transition rather than Soroban Host FFI.
+// The runtime entrypoint below separately enforces both the stored-admin identity
+// and Address::require_auth before it can write. An unsigned or non-admin
+// request is not a storage transition, even if the proposed value is unchanged.
+#[cfg(any(kani, test))]
+fn admin_update_pure(
+    stored_admin: u8,
+    claimed_caller: u8,
+    admin_signature_verified: bool,
+    new_admin: u8,
+) -> Result<u8, &'static str> {
+    if claimed_caller != stored_admin {
+        return Err("caller is not current admin");
+    }
+    if !admin_signature_verified {
+        return Err("current admin must authorize");
+    }
+    Ok(new_admin)
+}
+
+// Deliberately broken models are proof fixtures, never production entrypoints.
+// Kani should produce a counterexample for each omitted authorization boundary.
+#[cfg(kani)]
+fn admin_update_without_require_auth(stored: u8, caller: u8, replacement: u8) -> Result<u8, &'static str> {
+    if caller != stored {
+        return Err("caller is not current admin");
+    }
+    Ok(replacement)
+}
+
+#[cfg(kani)]
+fn admin_update_without_identity_check(signed: bool, replacement: u8) -> Result<u8, &'static str> {
+    if !signed {
+        return Err("signature missing");
+    }
+    Ok(replacement)
 }
 
 // ── Pure logic (verified with Kani) ─────────────────────────────────────────────
@@ -112,24 +150,36 @@ impl TokenContract {
         transfer_pure(balance_from, balance_to, amount).expect("transfer failed")
     }
 
-    /// One-shot initialisation entry point.
-    ///
-    /// Reads the flag from instance storage, delegates to `initialize_pure`, and
-    /// persists the flag on success.  Kani verifies the pure guard; the Host layer
-    /// here is intentionally thin and untouched by the proof.
-    pub fn initialize(env: Env, _name: Symbol) {
+    /// One-shot initialization binds the first administrator to an authenticated
+    /// Soroban Address. There is no unclaimed "set first admin" backdoor after
+    /// initialization; the deployer must choose and authorize initial_admin.
+    /// Kani proves initialize_pure's state guard, not Soroban Host storage/FFI.
+    pub fn initialize(env: Env, initial_admin: Address) {
+        initial_admin.require_auth();
         let already: bool = env
             .storage()
             .instance()
             .get(&symbol_short!("init"))
             .unwrap_or(false);
         initialize_pure(already).expect("already initialized");
+        env.storage()
+            .instance()
+            .set(&symbol_short!("admin"), &initial_admin);
         env.storage().instance().set(&symbol_short!("init"), &true);
     }
 
-    /// A function that interacts with Env (Host types).
-    /// Kani cannot verify this: Env, Symbol, and storage operations require host FFI.
-    pub fn set_admin(env: Env, new_admin: Symbol) {
+    /// Only the already-stored administrator can authorize a replacement.
+    /// Validate both identity and its Soroban signature before any write.
+    /// This Host-layer boundary is enforced at runtime; Kani separately proves
+    /// its corresponding role/signature state model, not Host FFI itself.
+    pub fn set_admin(env: Env, caller: Address, new_admin: Address) {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("admin"))
+            .expect("administrator is not initialized");
+        assert!(caller == stored_admin, "caller is not current admin");
+        caller.require_auth();
         env.storage()
             .instance()
             .set(&symbol_short!("admin"), &new_admin);
@@ -141,6 +191,53 @@ impl TokenContract {
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    /// Every possible stored admin, caller, signature state and replacement
+    /// must either reject or preserve both authorization predicates on success.
+    #[kani::proof]
+    fn verify_only_authenticated_admin_can_write_admin_state() {
+        let stored_admin: u8 = kani::any();
+        let claimed_caller: u8 = kani::any();
+        let signature_verified: bool = kani::any();
+        let replacement: u8 = kani::any();
+
+        let result = admin_update_pure(
+            stored_admin, claimed_caller, signature_verified, replacement
+        );
+        if claimed_caller != stored_admin || !signature_verified {
+            assert!(result.is_err(), "non-admin or unsigned caller reached an admin write");
+        } else {
+            assert_eq!(result, Ok(replacement), "authorized admin must update the value");
+        }
+    }
+
+    /// Negative control: comparing the caller to the stored admin without
+    /// require_auth accepts a forged caller identity. A counterexample MUST exist.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn verify_missing_require_auth_yields_counterexample() {
+        let stored_admin: u8 = kani::any();
+        let replacement: u8 = kani::any();
+        kani::assume(replacement != stored_admin);
+        let result = admin_update_without_require_auth(
+            stored_admin, stored_admin, replacement
+        );
+        assert!(result.is_err(), "forged unsigned admin must never mutate storage");
+    }
+
+    /// Negative control: checking only that SOME signature was present without
+    /// binding it to the stored admin authorizes the wrong account.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn verify_missing_admin_identity_yields_counterexample() {
+        let stored_admin: u8 = kani::any();
+        let impostor: u8 = kani::any();
+        let replacement: u8 = kani::any();
+        kani::assume(impostor != stored_admin);
+        kani::assume(replacement != stored_admin);
+        let result = admin_update_without_identity_check(true, replacement);
+        assert!(result.is_err(), "a different signed caller must not update admin");
+    }
 
     #[kani::proof]
     fn verify_transfer_pure_conservation() {
@@ -351,6 +448,17 @@ mod verification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_pure_rejects_unsigned_or_non_admin_callers() {
+        assert!(admin_update_pure(7, 3, true, 9).is_err());
+        assert!(admin_update_pure(7, 7, false, 9).is_err());
+    }
+
+    #[test]
+    fn admin_pure_allows_signed_stored_admin() {
+        assert_eq!(admin_update_pure(7, 7, true, 9), Ok(9));
+    }
 
     /// The correct transfer conserves the two-account total (concrete witness of
     /// the property `verify_transfer_pure_conservation` proves for all inputs).
