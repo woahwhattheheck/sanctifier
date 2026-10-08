@@ -130,6 +130,7 @@ def convert(report: dict, root: Path) -> tuple[list[dict], dict]:
     results = []
     rule_ids = set()
     seen = set()
+    fingerprint_occurrences: dict[tuple[str, str, str], int] = {}
 
     for group, finding in iter_findings(report):
         code = str(finding.get("code") or finding.get("vuln_id") or "SANCTIFIER_" + group.upper())
@@ -155,8 +156,15 @@ def convert(report: dict, root: Path) -> tuple[list[dict], dict]:
         }
         if location:
             path, line = location
+            # GitLab compares Code Quality fingerprints across revisions. A
+            # harmless line insertion must not report inherited debt as new.
+            # Number identical findings in deterministic scan order so distinct
+            # occurrences still retain distinct fingerprints.
+            fingerprint_key = (code, path, description)
+            occurrence = fingerprint_occurrences.get(fingerprint_key, 0)
+            fingerprint_occurrences[fingerprint_key] = occurrence + 1
             fingerprint = hashlib.sha256(
-                f"{code}\0{path}\0{line}\0{description}".encode("utf-8")
+                f"{code}\0{path}\0{description}\0{occurrence}".encode("utf-8")
             ).hexdigest()
             quality.append({
                 "description": description,
