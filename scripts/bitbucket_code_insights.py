@@ -76,6 +76,9 @@ def finding_message(entry: dict, category: str) -> str:
 def make_payload(report: dict, scan_root: Path, repo_root: Path, scan_exit: int):
     if not isinstance(report, dict) or report.get("success") is False:
         raise ValueError("Sanctifier scan failed or returned an error document")
+    metadata = report.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("format") != "sanctifier-ci-v1":
+        raise ValueError("Expected Sanctifier sanctifier-ci-v1 report format")
     findings = report.get("findings")
     if not isinstance(findings, dict):
         raise ValueError("Expected Sanctifier analyze --format json findings object")
@@ -92,6 +95,9 @@ def make_payload(report: dict, scan_root: Path, repo_root: Path, scan_exit: int)
     count = summary.get("total_findings")
     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
         raise ValueError("Missing or invalid Sanctifier total_findings count")
+    if any(not isinstance(summary.get(key), bool)
+           for key in ("has_high", "has_critical")):
+        raise ValueError("Missing or invalid Sanctifier severity summary")
     failed = bool(summary.get("has_high") or summary.get("has_critical") or scan_exit)
 
     annotations = []
@@ -105,6 +111,16 @@ def make_payload(report: dict, scan_root: Path, repo_root: Path, scan_exit: int)
             location = entry.get("location")
             if not location and entry.get("file") and entry.get("line"):
                 location = str(entry["file"]) + ":" + str(entry["line"])
+            if not location:
+                # Directory scans prefix unsafe/custom-rule snippets with the
+                # actual source filename; the structured line is authoritative.
+                snippet = entry.get("snippet")
+                line = entry.get("line")
+                source = (re.match(r"^(.+?\.rs):", snippet)
+                          if isinstance(snippet, str) else None)
+                if (source and isinstance(line, int)
+                        and not isinstance(line, bool) and line > 0):
+                    location = source.group(1) + ":" + str(line)
             path_line = file_line(location, scan_root, repo_root)
             if path_line is None:
                 continue  # still reflected in summary; never invent locations
@@ -114,6 +130,9 @@ def make_payload(report: dict, scan_root: Path, repo_root: Path, scan_exit: int)
             message = finding_message(entry, category)
             severity = str(entry.get("severity") or DEFAULT_SEVERITY.get(
                 category, "MEDIUM")).upper()
+            severity = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}.get(
+                severity, severity
+            )
             if severity not in SEVERITY_ORDER:
                 severity = "MEDIUM"
             external_id = "sanctifier-" + hashlib.sha256(
@@ -250,10 +269,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         report = json.loads(args.report.read_text(encoding="utf-8"))
+        metadata = report.get("metadata") if isinstance(report, dict) else None
+        if not isinstance(metadata, dict):
+            raise ValueError("Expected Sanctifier report metadata object")
         scan_root = args.scan_root
         if scan_root is None:
             scan_root = Path(
-                str(report.get("metadata", {}).get("project_path", "."))
+                str(metadata.get("project_path", "."))
             )
         if not scan_root.is_absolute():
             scan_root = args.repo_root / scan_root
@@ -275,3 +297,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

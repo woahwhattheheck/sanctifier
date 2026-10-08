@@ -25,7 +25,8 @@ The copy-ready source is in
 [examples/bitbucket/bitbucket-pipelines.yml](../../examples/bitbucket/bitbucket-pipelines.yml):
 
 ~~~yaml
-image: rust:1-bookworm
+image: rust:1.85.0-bookworm
+
 pipelines:
   pull-requests:
     "**":
@@ -33,19 +34,24 @@ pipelines:
           name: Sanctifier security findings
           script:
             - apt-get update && apt-get install -y --no-install-recommends python3 libz3-dev libdbus-1-dev pkg-config
-            - cargo install --locked --git https://github.com/Centurylong/sanctifier sanctifier-cli
-            - export SANCTIFIER_PROJECT_PATH="$(printenv SANCTIFIER_PROJECT_PATH || echo .)"
-            - set +e
-            - sanctifier analyze "$SANCTIFIER_PROJECT_PATH" --format json > sanctifier-report.json
-            - export SANCTIFIER_SCAN_EXIT=$?
-            - set -e
-            - python3 scripts/bitbucket_code_insights.py --report sanctifier-report.json --repo-root "$BITBUCKET_CLONE_DIR" --scan-root "$SANCTIFIER_PROJECT_PATH" --scan-exit-code "$SANCTIFIER_SCAN_EXIT" --publish
-            - exit "$SANCTIFIER_SCAN_EXIT"
+            - git clone --depth 1 https://github.com/Centurylong/sanctifier.git /tmp/sanctifier-src
+            - cargo install --locked --path /tmp/sanctifier-src/tooling/sanctifier-cli
+            - |
+              SANCTIFIER_PROJECT_PATH="${SANCTIFIER_PROJECT_PATH:-.}"
+              scan_status=0
+              sanctifier analyze "$SANCTIFIER_PROJECT_PATH" --format json > sanctifier-report.json || scan_status=$?
+              # Publish through the native Code Insights auth proxy, then
+              # preserve the scanner status without hiding upload failures.
+              python3 scripts/bitbucket_code_insights.py --report sanctifier-report.json --repo-root "$BITBUCKET_CLONE_DIR" --scan-root "$SANCTIFIER_PROJECT_PATH" --scan-exit-code "$scan_status" --publish || exit $?
+              exit "$scan_status"
           artifacts:
             - sanctifier-report.json
 ~~~
 
-The install step includes native Z3, D-Bus, and `pkg-config` development prerequisites needed by Sanctifier's source build; Python alone is insufficient in the base Rust container.
+The image pins Rust 1.85.0 to match Sanctifier's supported CI toolchain and its
+`ethnum` dependency. The install step includes native Z3, D-Bus, and
+`pkg-config` development prerequisites and installs the CLI from its package
+directory. Python alone is insufficient in the base Rust container.
 
 ## Authentication and API behavior
 
@@ -53,8 +59,8 @@ Inside Bitbucket Cloud Pipelines, the helper uses the native localhost:29418
 authentication proxy documented by Atlassian, with the report sent to the
 fixed api.bitbucket.org host. **No app password or other copied credential is
 required for this normal pipeline workflow.** Outside Pipelines, a scoped
-BITBUCKET_CODE_INSIGHTS_TOKEN can be used with the standard HTTPS Bearer
-Authorization header (never check the token into Git). The environment supplies
+BITBUCKET_CODE_INSIGHTS_TOKEN (a repository access token, not an Atlassian
+user API token) can be used with the standard HTTPS Bearer Authorization header (never check the token into Git). The environment supplies
 BITBUCKET_WORKSPACE, BITBUCKET_REPO_SLUG and BITBUCKET_COMMIT.
 
 The helper calls the Cloud REST API, **not Bitbucket Data Center**:
@@ -67,17 +73,22 @@ The helper calls the Cloud REST API, **not Bitbucket Data Center**:
 Report ID is stable: sanctifier-security. Finding IDs hash category, code,
 location and description. Only findings with exact source files resolvable
 *inside the checked-out repository* and positive line numbers become inline
-annotations. This avoids invented source locations. All findings, including
+annotations. Directory-scan unsafe-pattern and custom-rule records use the filename
+prefix in their snippet together with their structured line number. Custom-rule
+Error/Warning/Info severities map to HIGH/MEDIUM/LOW. Snippets without source
+provenance remain locationless. This avoids invented source locations. All findings, including
 locationless auth gaps or ledger warnings, remain counted in the report and
 raw JSON artifact. The UI only displays inline annotations on lines changed
 by the pull request; the full report remains available on the commit.
 
-The publisher refuses malformed/failed scanner documents and does not post a
+The publisher requires the `sanctifier-ci-v1` format and complete summary
+counts and severity flags. It refuses malformed/failed scanner documents and does not post a
 false green pass. Code Insights HTTP 429/502/503/504 responses get at most two
 bounded retries (honoring numeric `Retry-After` values); authentication and
 other permanent API errors fail immediately, and persistent transient errors
-still fail the pipeline. Critical/high findings
-(or a nonzero scan exit code) result in FAILED; otherwise the report is PASSED.
+still fail the pipeline. A critical/high scanner summary flag or a nonzero
+scan exit code results in FAILED; otherwise the report is PASSED. Annotation
+severity does not redefine the scanner's exit policy.
 
 Atlassian references:
 - [Code Insights](https://support.atlassian.com/bitbucket-cloud/docs/code-insights/)
@@ -110,3 +121,4 @@ finding and rerun on a new commit: it should show PASSED without the old
 annotation. This end-to-end hosted smoke requires a real Bitbucket repository
 and working Pipelines permissions; it must **not** be claimed as completed on
 source publication alone.
+
