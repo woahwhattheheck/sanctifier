@@ -1,4 +1,5 @@
 pub mod analyze;
+pub mod gas;
 pub mod attest;
 pub mod audit;
 pub mod badge;
