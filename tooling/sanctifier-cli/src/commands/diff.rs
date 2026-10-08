@@ -107,7 +107,9 @@ pub fn exec(args: DiffArgs) -> anyhow::Result<()> {
         );
     }
 
-    // Analyze current working tree
+    // The target can be a nested crate: preserve the same scope in the base
+    // checkout instead of accidentally scanning the entire repository.
+    let scan_scope = repo_relative_scan_path(&args.path)?;
     let current_findings = analyze_tree(&args.path, &args.vuln_db, is_json)?;
 
     // Create temporary directory for the ref checkout
@@ -117,8 +119,8 @@ pub fn exec(args: DiffArgs) -> anyhow::Result<()> {
     // Checkout the ref to temp directory
     checkout_ref_to_temp(&args.path, &args.git_ref, ref_path)?;
 
-    // Analyze the ref
-    let ref_findings = analyze_tree(ref_path, &args.vuln_db, is_json)?;
+    let ref_scan_path = ref_path.join(scan_scope);
+    let ref_findings = analyze_tree(&ref_scan_path, &args.vuln_db, is_json)?;
 
     // Compare stable finding identities instead of temp-worktree absolute paths
     // or shifting source line numbers. Preserve duplicate occurrences by count.
@@ -421,11 +423,33 @@ fn collect_findings_from_file(
     Ok(())
 }
 
+fn git_workdir(path: &Path) -> &Path {
+    if path.is_file() {
+        path.parent().unwrap_or(Path::new("."))
+    } else {
+        path
+    }
+}
+
+fn repo_relative_scan_path(path: &Path) -> anyhow::Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(git_workdir(path))
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("Unable to determine the git repository root");
+    }
+    let top = String::from_utf8(output.stdout)?;
+    let root = fs::canonicalize(top.trim())?;
+    let target = fs::canonicalize(path)?;
+    Ok(target.strip_prefix(root)?.to_path_buf())
+}
+
 fn is_git_repo(path: &Path) -> anyhow::Result<bool> {
     let output = Command::new("git")
         .arg("rev-parse")
         .arg("--git-dir")
-        .current_dir(path)
+        .current_dir(git_workdir(path))
         .output()?;
     Ok(output.status.success())
 }
@@ -435,14 +459,14 @@ fn git_ref_exists(path: &Path, git_ref: &str) -> anyhow::Result<bool> {
         .arg("rev-parse")
         .arg("--verify")
         .arg(git_ref)
-        .current_dir(path)
+        .current_dir(git_workdir(path))
         .output()?;
     Ok(output.status.success())
 }
 
 fn checkout_ref_to_temp(repo_path: &Path, git_ref: &str, temp_path: &Path) -> anyhow::Result<()> {
     // Get the absolute path to the git repository
-    let repo_path = fs::canonicalize(repo_path)?;
+    let repo_path = fs::canonicalize(git_workdir(repo_path))?;
 
     // Use git worktree to checkout the ref
     let output = Command::new("git")
@@ -607,7 +631,7 @@ impl Drop for DiffArgs {
         let _ = Command::new("git")
             .arg("worktree")
             .arg("prune")
-            .current_dir(&self.path)
+            .current_dir(git_workdir(&self.path))
             .output();
     }
 }
