@@ -1,6 +1,6 @@
 use crate::finding_codes::UNBOUNDED_RECURSION;
 use crate::rules::{Rule, RuleViolation, Severity};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Expr, FnArg, Pat, Signature};
@@ -66,12 +66,14 @@ impl FunctionVisitor {
 
         let fn_name = sig.ident.to_string();
         let depth_params = depth_parameter_names(sig);
+        let param_positions = typed_parameter_positions(sig);
         let mut facts = RecursionFacts {
             fn_name: &fn_name,
             depth_params: &depth_params,
+            param_positions: &param_positions,
             recursive_calls: 0,
+            bounded_recursive_calls: 0,
             guarded_depth_params: HashSet::new(),
-            stepped_depth_params: HashSet::new(),
         };
         facts.visit_block(block);
 
@@ -79,11 +81,10 @@ impl FunctionVisitor {
             return;
         }
 
-        let bounded = depth_params.iter().any(|param| {
-            facts.guarded_depth_params.contains(param)
-                && facts.stepped_depth_params.contains(param)
-        });
-        if bounded {
+        // Every direct recursive call must advance an actually guarded depth
+        // parameter in its own argument slot. One good call cannot excuse an
+        // unchanged-depth call (or a step accidentally passed to another arg).
+        if facts.bounded_recursive_calls == facts.recursive_calls {
             return;
         }
 
@@ -128,9 +129,10 @@ impl<'ast> Visit<'ast> for FunctionVisitor {
 struct RecursionFacts<'a> {
     fn_name: &'a str,
     depth_params: &'a HashSet<String>,
+    param_positions: &'a HashMap<String, usize>,
     recursive_calls: usize,
+    bounded_recursive_calls: usize,
     guarded_depth_params: HashSet<String>,
-    stepped_depth_params: HashSet<String>,
 }
 
 impl RecursionFacts<'_> {
@@ -148,10 +150,17 @@ impl RecursionFacts<'_> {
         args: &syn::punctuated::Punctuated<Expr, syn::Token![,]>,
     ) {
         self.recursive_calls += 1;
-        for param in self.depth_params {
-            if args.iter().any(|arg| is_monotonic_step(arg, param)) {
-                self.stepped_depth_params.insert(param.clone());
-            }
+        // Require the advancing expression at the declared parameter index;
+        // using depth+1 to fill an unrelated argument is not a depth bound.
+        if self.depth_params.iter().any(|param| {
+            self.guarded_depth_params.contains(param)
+                && self
+                    .param_positions
+                    .get(param)
+                    .and_then(|index| args.iter().nth(*index))
+                    .is_some_and(|arg| is_monotonic_step(arg, param))
+        }) {
+            self.bounded_recursive_calls += 1;
         }
     }
 }
@@ -208,6 +217,23 @@ impl<'ast> Visit<'ast> for GuardCollector<'_> {
         }
         visit::visit_expr_binary(self, node);
     }
+}
+
+// Method-call arguments omit the self receiver, so index typed parameters
+// rather than raw Signature.inputs (which can include self at position zero).
+fn typed_parameter_positions(sig: &Signature) -> HashMap<String, usize> {
+    sig.inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            FnArg::Typed(typed) => Some(typed),
+            FnArg::Receiver(_) => None,
+        })
+        .enumerate()
+        .filter_map(|(position, arg)| match arg.pat.as_ref() {
+            Pat::Ident(ident) => Some((ident.ident.to_string(), position)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn depth_parameter_names(sig: &Signature) -> HashSet<String> {
@@ -412,5 +438,32 @@ fn bounded_control(depth: u32) {
             assert_eq!(finding.rule_name, UNBOUNDED_RECURSION);
             assert_eq!(finding.severity, Severity::Error);
         }
+    }
+
+    #[test]
+    fn every_recursive_call_must_step_the_guarded_argument_in_its_own_slot() {
+        let source = r#"
+fn mixed_calls(depth: u32) {
+    if depth >= 8 { return; }
+    mixed_calls(depth + 1);
+    mixed_calls(depth);
+}
+
+fn wrong_argument(depth: u32, value: u32) {
+    if depth >= 8 { return; }
+    wrong_argument(depth, depth + 1);
+}
+
+fn fully_bounded(depth: u32) {
+    if depth >= 8 { return; }
+    fully_bounded(depth + 1);
+}
+"#;
+        let findings = UnboundedRecursionRule.check(source);
+        let names: Vec<_> = findings
+            .iter()
+            .map(|finding| finding.location.split_once(':').unwrap().0)
+            .collect();
+        assert_eq!(names, vec!["mixed_calls", "wrong_argument"]);
     }
 }
