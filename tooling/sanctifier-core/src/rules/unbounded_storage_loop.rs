@@ -125,7 +125,7 @@ impl LoopVisitor<'_> {
         self.violations.push(
             RuleViolation::new(
                 UNBOUNDED_LOOP,
-                Severity::Warning,
+                Severity::Error,
                 format!(
                     "{UNBOUNDED_LOOP}: `{}` iterates storage-sourced collection `{}` without a fixed cap or pagination",
                     self.fn_name, collection
@@ -538,6 +538,7 @@ mod tests {
 
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert_eq!(findings[0].rule_name, UNBOUNDED_LOOP);
+        assert_eq!(findings[0].severity, Severity::Error);
         assert!(findings[0].location.contains("pay_all"));
     }
 
