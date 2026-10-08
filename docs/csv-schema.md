@@ -21,4 +21,19 @@ schema_version,category,code,location,summary,details_json
 
 Fields containing commas, double quotes, carriage returns, or newlines are quoted. Embedded double quotes are doubled. Rows use CRLF line endings.
 
+### Spreadsheet-safe text cells
+
+Finding locations, summaries and other scalar cells can contain untrusted source
+text. Spreadsheet software may interpret a cell beginning with `=`, `+`, `-` or
+`@` as a formula even when the CSV cell is correctly quoted. For spreadsheet
+consumption, the exporter prefixes these cells with a literal apostrophe;
+leading whitespace (and a possible byte-order mark) is ignored when detecting
+that prefix. The apostrophe goes *inside* CSV quotes, so commas and newlines
+still parse as a single cell. Normal fields are unaffected.
+
+The scalar columns are presentation text. If a prefixed value must be recovered
+verbatim for machine processing, use the original, unmodified finding in the
+`details_json` column. This mitigates common spreadsheet formula interpretation
+but is not a guarantee about every spreadsheet product or import setting.
+
 The schema version changes only when the column contract changes incompatibly. Consumers should key parsing behavior on `schema_version`, not on the Sanctifier package version.
