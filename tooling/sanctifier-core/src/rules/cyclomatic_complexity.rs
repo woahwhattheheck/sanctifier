@@ -1,4 +1,4 @@
-use crate::complexity::{analyze_complexity, THRESHOLD_CYCLOMATIC};
+use crate::complexity::{analyze_all_function_complexity, THRESHOLD_CYCLOMATIC};
 use crate::finding_codes::CYCLOMATIC_COMPLEXITY;
 use crate::rules::{Rule, RuleViolation, Severity};
 
@@ -48,7 +48,7 @@ impl Rule for CyclomaticComplexityRule {
             None => return vec![],
         };
 
-        analyze_complexity(&file, "")
+        analyze_all_function_complexity(&file, "")
             .functions
             .into_iter()
             .filter(|metrics| metrics.cyclomatic_complexity > self.threshold)
@@ -77,6 +77,7 @@ impl Rule for CyclomaticComplexityRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::complexity::analyze_complexity;
 
     const SOURCE: &str = r#"
         pub fn hotspot(value: i32) -> i32 {
@@ -142,8 +143,33 @@ mod tests {
         assert_eq!(complexity("method"), 2);
         assert_eq!(complexity("closure_control"), 3);
         let findings = CyclomaticComplexityRule::with_threshold(2).check(source);
+        // Each nested helper is analyzed on its own, never added to the
+        // enclosing public function's complexity score.
+        assert_eq!(findings.len(), 3);
+        assert_eq!(findings.iter().filter(|f| f.location == "helper").count(), 2);
+        assert!(findings.iter().any(|f| f.location == "closure_control"));
+    }
+
+    #[test]
+    fn private_free_function_hotspots_are_not_lost() {
+        let source = r#"
+            fn private_hotspot(value: i32) -> i32 {
+                let mut out = 0;
+                if value > 0 { out += 1; }
+                if value > 1 { out += 1; }
+                if value > 2 { out += 1; }
+                out
+            }
+            pub fn public_small(value: i32) -> i32 { value + 1 }
+        "#;
+        let ast = syn::parse_file(source).unwrap();
+        let public_report = analyze_complexity(&ast, "");
+        assert_eq!(public_report.functions.len(), 1);
+        assert_eq!(public_report.functions[0].name, "public_small");
+
+        let findings = CyclomaticComplexityRule::with_threshold(3).check(source);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].location, "closure_control");
+        assert_eq!(findings[0].location, "private_hotspot");
     }
 
     #[test]
