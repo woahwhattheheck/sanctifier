@@ -158,3 +158,87 @@ fn test_diff_json_output() {
         .stdout(predicate::str::contains("removed"))
         .stdout(predicate::str::contains("summary"));
 }
+#[test]
+fn test_analyze_since_matches_moved_findings_and_flags_new_ones() {
+    let temp_dir = TempDir::new().unwrap();
+    let repo = temp_dir.path();
+    let git = |args: &[&str]| {
+        let result = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&result.stderr));
+    };
+
+    git(&["init"]);
+    git(&["config", "user.name", "Test User"]);
+    git(&["config", "user.email", "test@example.com"]);
+    fs::create_dir(repo.join("src")).unwrap();
+    let original = "pub fn old() { let _ = Some(1).unwrap(); }\n";
+    fs::write(repo.join("src/lib.rs"), original).unwrap();
+    git(&["add", "src/lib.rs"]);
+    git(&["commit", "-m", "baseline"]);
+
+    // A line insertion changes every location, but no issue was introduced.
+    fs::write(repo.join("src/lib.rs"), format!("\n\n{original}")).unwrap();
+    let unchanged = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .args(["analyze", "--since", "HEAD", "--format", "json"])
+        .arg(repo)
+        .output()
+        .unwrap();
+    assert!(
+        unchanged.status.success(),
+        "unchanged scan: {}",
+        String::from_utf8_lossy(&unchanged.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&unchanged.stdout).unwrap();
+    assert_eq!(result["summary"]["added_count"], 0);
+    assert_eq!(result["summary"]["has_new_findings"], false);
+    assert_eq!(result["persisting"].as_array().unwrap().len(), 0);
+
+    // A nested crate path must compare to the same subpath in the base
+    // worktree, rather than scanning unrelated repository files.
+    let scoped = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .args(["analyze", "--since", "HEAD", "--format", "json"])
+        .arg(repo.join("src"))
+        .output()
+        .unwrap();
+    assert!(scoped.status.success(), "nested path should have no new findings");
+    let scoped_result: serde_json::Value = serde_json::from_slice(&scoped.stdout).unwrap();
+    assert_eq!(scoped_result["summary"]["added_count"], 0);
+
+    // Introduce another unsafe call without removing the inherited one.
+    fs::write(
+        repo.join("src/lib.rs"),
+        format!("\n\n{original}pub fn new() {{ let _ = None::<u8>.unwrap(); }}\n"),
+    )
+    .unwrap();
+    let new_issue = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .args(["analyze", "--since", "HEAD", "--format", "json"])
+        .arg(repo)
+        .output()
+        .unwrap();
+    let new_result: serde_json::Value = serde_json::from_slice(&new_issue.stdout).unwrap();
+    assert!(!new_issue.status.success(), "new findings must fail the PR gate");
+    assert!(new_result["summary"]["added_count"].as_u64().unwrap() >= 1);
+    assert_eq!(new_result["removed"].as_array().unwrap().len(), 0);
+    assert_eq!(new_result["persisting"].as_array().unwrap().len(), 0);
+
+    // The nonzero exit must not leave a detached git worktree behind.
+    // Git metadata is the source of truth even when temp files are deleted.
+    let registered = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(registered.status.success());
+    let worktrees = String::from_utf8_lossy(&registered.stdout)
+        .lines()
+        .filter(|line| line.starts_with("worktree "))
+        .count();
+    assert_eq!(worktrees, 1, "nonzero --since leaked a temporary git worktree");
+}
