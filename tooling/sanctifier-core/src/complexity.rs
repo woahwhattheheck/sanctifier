@@ -80,9 +80,25 @@ impl<'ast> Visit<'ast> for FnComplexityVisitor {
 
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.cyclomatic += 1;
+
+        // Rust represents `else if` as an ExprIf nested directly in the
+        // parent's else branch. It is another branch at the same source-level
+        // nesting, not a deeper block. Flatten only a direct else-if chain;
+        // an explicit `else { if ... }` still nests through the block visitor.
         self.enter();
-        syn::visit::visit_expr_if(self, node);
+        self.visit_expr(&node.cond);
+        self.visit_block(&node.then_branch);
         self.exit();
+
+        if let Some((_, else_branch)) = &node.else_branch {
+            if let syn::Expr::If(else_if) = else_branch.as_ref() {
+                self.visit_expr_if(else_if);
+            } else {
+                self.enter();
+                self.visit_expr(else_branch);
+                self.exit();
+            }
+        }
     }
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
         // Each arm beyond the first adds a branch
