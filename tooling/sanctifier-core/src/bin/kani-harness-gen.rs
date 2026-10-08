@@ -12,7 +12,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("read {}", &args[0]))?;
     let output = kani_harness::generate_kani_harnesses(&input, &args[1])?;
     let target = std::path::Path::new(&args[2]);
-    if let Some(dir) = target.parent() {
+    if let Some(dir) = target.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
     let mut file = OpenOptions::new().create_new(true).write(true).open(target)
