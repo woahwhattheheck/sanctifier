@@ -1,0 +1,25 @@
+# Copy to your Soroban repository root as bitbucket-pipelines.yml.
+# Also copy Sanctifier's scripts/bitbucket_code_insights.py into scripts/.
+# Set SANCTIFIER_PROJECT_PATH when the contract is not at repository root.
+image: rust:1-bookworm
+
+pipelines:
+  pull-requests:
+    "**":
+      - step:
+          name: Sanctifier security findings
+          script:
+            - apt-get update && apt-get install -y --no-install-recommends python3
+            - cargo install --locked --git https://github.com/Centurylong/sanctifier sanctifier-cli
+            - export SANCTIFIER_PROJECT_PATH="$(printenv SANCTIFIER_PROJECT_PATH || echo .)"
+            - set +e
+            - sanctifier analyze "$SANCTIFIER_PROJECT_PATH" --format json > sanctifier-report.json
+            - export SANCTIFIER_SCAN_EXIT=$?
+            - set -e
+            # Bitbucket Pipelines includes a local Code Insights auth proxy.
+            # The helper uploads the report even if security findings made
+            # the scan fail; after publishing we restore the scan exit status.
+            - python3 scripts/bitbucket_code_insights.py --report sanctifier-report.json --repo-root "$BITBUCKET_CLONE_DIR" --scan-root "$SANCTIFIER_PROJECT_PATH" --scan-exit-code "$SANCTIFIER_SCAN_EXIT" --publish
+            - exit "$SANCTIFIER_SCAN_EXIT"
+          artifacts:
+            - sanctifier-report.json
