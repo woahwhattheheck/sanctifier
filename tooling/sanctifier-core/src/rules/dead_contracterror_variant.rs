@@ -103,12 +103,7 @@ impl<'ast> Visit<'ast> for ErrorEnumCollector {
                 variants: item
                     .variants
                     .iter()
-                    .map(|variant| {
-                        (
-                            variant.ident.to_string(),
-                            variant.ident.span().start().line,
-                        )
-                    })
+                    .map(|variant| (variant.ident.to_string(), variant.ident.span().start().line))
                     .collect(),
             });
         }
@@ -131,8 +126,7 @@ impl VariantUsage<'_> {
             .map(|segment| segment.ident.to_string())
             .collect();
         for pair in names.windows(2) {
-            if (pair[0] == self.enum_name
-                || (self.inside_enum_impl && pair[0] == "Self"))
+            if (pair[0] == self.enum_name || (self.inside_enum_impl && pair[0] == "Self"))
                 && self.variants.contains(&pair[1])
             {
                 self.used.insert(pair[1].clone());
@@ -205,7 +199,7 @@ impl<'ast> Visit<'ast> for VariantUsage<'_> {
         let prior = self.inside_enum_impl;
         self.inside_enum_impl = matches!(
             &*item.self_ty,
-            Type::Path(ty) if ty.path.segments.last().is_some_and(|s| s.ident.to_string() == self.enum_name)
+            Type::Path(ty) if ty.path.segments.last().is_some_and(|s| s.ident == self.enum_name)
         );
         visit::visit_item_impl(self, item);
         self.inside_enum_impl = prior;
