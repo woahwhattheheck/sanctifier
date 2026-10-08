@@ -1,0 +1,42 @@
+# Copy this job into a Soroban project's .gitlab-ci.yml or include it locally.
+# Set SANCTIFIER_SCAN_PATH to the directory with its Soroban Cargo.toml.
+# Pin SANCTIFIER_REF to a reviewed release when deploying beyond the trial.
+stages:
+  - security
+
+sanctifier_security:
+  stage: security
+  # Match Sanctifier's existing CI toolchain. Newer rustc versions currently
+  # expose a transitive ethnum compatibility issue noted in the main CI.
+  image: rust:1.85-bookworm
+  variables:
+    SANCTIFIER_SCAN_PATH: "."
+    SANCTIFIER_SOURCE_URL: "https://github.com/Centurylong/sanctifier.git"
+    SANCTIFIER_REF: "main"
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends python3 git clang pkg-config libz3-dev libdbus-1-dev ca-certificates
+    - git clone --depth 1 --branch "$SANCTIFIER_REF" "$SANCTIFIER_SOURCE_URL" /tmp/sanctifier-ci
+    - cargo install --path /tmp/sanctifier-ci/tooling/sanctifier-cli --locked --root /tmp/sanctifier-installed
+  script:
+    - |
+      # Preserve the analyzer finding status, but convert and publish both
+      # reports even when vulnerabilities cause an exit code of 1.
+      set +e
+      /tmp/sanctifier-installed/bin/sanctifier analyze "$SANCTIFIER_SCAN_PATH" --format json > sanctifier-report.json
+      scan_status=$?
+      set -e
+      python3 /tmp/sanctifier-ci/scripts/sanctifier-gitlab-report.py \
+        --input sanctifier-report.json \
+        --root "$CI_PROJECT_DIR" \
+        --codequality gl-code-quality-report.json \
+        --sarif sanctifier.sarif
+      exit "$scan_status"
+  artifacts:
+    when: always
+    expire_in: 7 days
+    reports:
+      codequality: gl-code-quality-report.json
+    paths:
+      - sanctifier-report.json
+      - gl-code-quality-report.json
+      - sanctifier.sarif
