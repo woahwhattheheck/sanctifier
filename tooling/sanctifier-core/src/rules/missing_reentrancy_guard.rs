@@ -225,6 +225,15 @@ fn is_client_constructor(expr: &syn::Expr) -> bool {
 }
 
 impl<'ast> Visit<'ast> for EntryFacts {
+    fn visit_stmt(&mut self, node: &'ast syn::Stmt) {
+        // An item statement declares a local helper/type; it does not execute
+        // that helper's body as part of the surrounding entrypoint.
+        if matches!(node, syn::Stmt::Item(_)) {
+            return;
+        }
+        syn::visit::visit_stmt(self, node);
+    }
+
     fn visit_block(&mut self, node: &'ast syn::Block) {
         let active_on_entry = self.guard_active;
         let guards_on_entry = self.guard_vars.clone();
@@ -272,6 +281,22 @@ impl<'ast> Visit<'ast> for EntryFacts {
             let segments: Vec<_> = path.path.segments.iter().map(|s| s.ident.to_string()).collect();
             let guard = segments.iter().any(|s| s == "SanctifiedGuard" || s == "ReentrancyGuard");
             let action = segments.last().map(String::as_str).unwrap_or("");
+            // Explicitly dropping the sole tracked RAII guard ends its
+            // protection before any later token transfer or external call.
+            // Do not treat drop(&guard) (only a reference) as destruction.
+            // Multiple live guards remain conservative without alias analysis.
+            if matches!(
+                segments.join("::").as_str(),
+                "drop" | "std::mem::drop" | "core::mem::drop"
+            ) && node.args.len() == 1 && self.guard_vars.len() == 1 {
+                if let Some(syn::Expr::Path(dropped)) = node.args.first() {
+                    if let Some(ident) = dropped.path.get_ident() {
+                        if self.guard_vars.remove(&ident.to_string()) {
+                            self.guard_active = false;
+                        }
+                    }
+                }
+            }
             if guard && matches!(action, "enter" | "try_enter" | "acquire") {
                 self.guard_active = true;
             }
@@ -364,6 +389,52 @@ mod tests {
         let rule = MissingReentrancyGuardRule::new();
         assert!(rule.check(secure).is_empty());
         assert_eq!(rule.check(unsafe_src).len(), 1);
+    }
+
+    #[test]
+    fn unused_local_helper_cannot_create_outer_reentrancy_finding() {
+        let src = r#"
+            impl Vault {
+                pub fn inspect(env: Env, token: Address, to: Address, amount: i128) {
+                    // This is a declaration, never called by inspect.
+                    fn unused_transfer(env: Env, token: Address, to: Address, amount: i128) {
+                        TokenClient::new(&env, &token).transfer(&to, &amount);
+                    }
+                    let nothing = 1;
+                }
+            }
+        "#;
+        assert!(MissingReentrancyGuardRule::new().check(src).is_empty());
+    }
+
+    #[test]
+    fn explicitly_dropped_sole_guard_does_not_hide_value_transfer() {
+        let guarded = r#"
+            impl Vault {
+                pub fn withdraw(env: Env, token: Address, to: Address, amount: i128) {
+                    let guard = SanctifiedGuard::enter(&env);
+                    TokenClient::new(&env, &token).transfer(&to, &amount);
+                }
+            }
+        "#;
+        assert!(MissingReentrancyGuardRule::new().check(guarded).is_empty());
+
+        for drop_path in ["drop", "std::mem::drop", "core::mem::drop"] {
+            let unguarded = guarded.replace(
+                "TokenClient::new(&env, &token).transfer",
+                &format!("{drop_path}(guard); TokenClient::new(&env, &token).transfer"),
+            );
+            let findings = MissingReentrancyGuardRule::new().check(&unguarded);
+            assert_eq!(findings.len(), 1, "{drop_path} must release the guard");
+            assert!(findings[0].location.starts_with("withdraw:"));
+        }
+
+        // Dropping just a reference does not destroy the RAII guard.
+        let borrowed = guarded.replace(
+            "TokenClient::new(&env, &token).transfer",
+            "drop(&guard); TokenClient::new(&env, &token).transfer",
+        );
+        assert!(MissingReentrancyGuardRule::new().check(&borrowed).is_empty());
     }
 
     #[test]
