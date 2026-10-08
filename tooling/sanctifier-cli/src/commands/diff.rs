@@ -122,6 +122,21 @@ pub fn exec(args: DiffArgs) -> anyhow::Result<()> {
     let ref_scan_path = ref_path.join(scan_scope);
     let ref_findings = analyze_tree(&ref_scan_path, &args.vuln_db, is_json)?;
 
+    // Detach the temporary worktree before reporting. A failing --since gate
+    // exits the process below, bypassing TempDir/Drop cleanup and otherwise
+    // leaving a stale worktree registered in the contributor's repository.
+    let removal = Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(ref_path)
+        .current_dir(git_workdir(&args.path))
+        .output()?;
+    if !removal.status.success() {
+        anyhow::bail!(
+            "Failed to clean up temporary comparison worktree: {}",
+            String::from_utf8_lossy(&removal.stderr)
+        );
+    }
+
     // Compare stable finding identities instead of temp-worktree absolute paths
     // or shifting source line numbers. Preserve duplicate occurrences by count.
     let mut report = compare_findings(current_findings, ref_findings);
