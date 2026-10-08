@@ -49,12 +49,21 @@ steps:
       publishLocation: pipeline
 ```
 
-The example pins Rust **1.85.0** and installs `libz3-dev`,
-`libdbus-1-dev`, and `pkg-config` to match Sanctifier's build prerequisites.
-It builds `sanctifier-cli` with `cargo install --locked --git`; CI runners
-need network access and permission to install build dependencies. For
-reproducible builds, pin the upstream Sanctifier Git commit or vendor a known
-CLI binary in your production pipeline.
+The example pins Rust **1.85.0** and installs `clang`,
+`libclang-dev`, `libz3-dev`, `libdbus-1-dev`, and `pkg-config` to match
+Sanctifier's build prerequisites. The CLI declares an **independent nested
+Cargo workspace** at `tooling/sanctifier-cli`; it is not a member of the
+repository-root Cargo workspace. The pipeline therefore clones Sanctifier
+into the Azure agent's temporary directory, then runs
+`cargo +1.85.0 install --locked --path "$sanctifier_src/tooling/sanctifier-cli"`.
+Installing the package with `cargo install --git ... sanctifier-cli` can
+miss that nested workspace. The executable still lands in Cargo's bin directory
+available to later steps on the agent.
+
+CI runners need network access and permission to install build dependencies.
+The sample shallow-clones the upstream default branch; for reproducible
+production builds, check out a reviewed immutable upstream commit before the
+`cargo install --path` command or vendor a known CLI binary.
 
 ## Results and failure behavior
 
