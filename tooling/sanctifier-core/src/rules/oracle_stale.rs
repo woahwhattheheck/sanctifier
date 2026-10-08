@@ -150,3 +150,60 @@ fn mark_timestamp_guards(tokens: &str, guarded: &mut Vec<String>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_unchecked_oracle_price_and_records_golden_finding() {
+        let source = r#"
+            impl Contract {
+                pub fn quote(env: Env, oracle: OracleClient, amount: i128) -> i128 {
+                    let reading = oracle.last_price();
+                    amount * reading.price
+                }
+            }
+        "#;
+        let findings = OracleStaleRule::new().check(source);
+        assert_eq!(findings.len(), 1);
+        let stable = findings.iter().map(|v| {
+            format!("{}|{:?}|{}",
+                v.rule_name,
+                v.severity,
+                v.location.split(':').next().unwrap_or(""))
+        }).collect::<Vec<_>>().join("\n");
+        insta::assert_snapshot!(stable, @"SANCT_ORACLE_STALE|Warning|quote");
+    }
+
+    #[test]
+    fn safe_timestamp_guard_before_price_use() {
+        let source = r#"
+            impl Contract {
+                pub fn quote(env: Env, oracle: OracleClient, amount: i128, max_age: u64) -> i128 {
+                    let reading = oracle.last_price();
+                    let now = env.ledger().timestamp();
+                    if now - reading.timestamp > max_age {
+                        panic!("oracle price too old");
+                    }
+                    amount * reading.price
+                }
+            }
+        "#;
+        assert!(OracleStaleRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn ignores_unconsumed_oracle_record_and_unrelated_arithmetic() {
+        let source = r#"
+            impl Contract {
+                pub fn check(env: Env, oracle: OracleClient) {
+                    let reading = oracle.latest_price();
+                    env.events().publish(("observed",), reading.timestamp);
+                }
+                pub fn sum(a: i128, b: i128) -> i128 { a + b }
+            }
+        "#;
+        assert!(OracleStaleRule::new().check(source).is_empty());
+    }
+}
