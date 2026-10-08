@@ -81,7 +81,7 @@ impl CentralizationRule {
                 CENTRALIZATION_RISK,
                 severity,
                 format!(
-                    "Admin-gated \`{function_name}\` can perform: {capabilities}; controlling authority: {controls}"
+                    "Admin-gated `{function_name}` can perform: {capabilities}; controlling authority: {controls}"
                 ),
                 format!("{function_name}:{}", name.span().start().line),
             )
@@ -341,7 +341,7 @@ mod tests {
         // Report snapshot: fixed entry order, explicit privileges and severities.
         let preview = markdown_section(&findings);
         assert!(preview.starts_with("## Centralization — admin powers\n"));
-        assert!(preview.contains("[Error] Admin-gated \`upgrade\`"));
+        assert!(preview.contains("[Error] Admin-gated `upgrade`"));
         assert_eq!(markdown_section(&[]), "## Centralization — admin powers\nNo explicit privileged entrypoints identified.\n");
     }
 
