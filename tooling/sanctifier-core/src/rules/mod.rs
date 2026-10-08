@@ -20,6 +20,7 @@ pub mod ledger_seconds;
 pub mod ledger_size;
 pub mod missing_ttl;
 pub mod nullifier_growth;
+pub mod oracle_stale;
 pub mod panic_detection;
 pub mod proof_length_check;
 pub mod public_input_range;
@@ -221,6 +222,7 @@ impl RuleRegistry {
         registry.register(auth_gap::VisibilityLeakRule::new());
         registry.register(auth_on_caller::AuthOnCallerRule::new());
         registry.register(auth_replay::AuthReplayRule::new());
+        registry.register(oracle_stale::OracleStaleRule::new());
         registry.register(ledger_size::LedgerSizeRule::new());
         registry.register(panic_detection::PanicDetectionRule::new());
         registry.register(arithmetic_overflow::ArithmeticOverflowRule::new());
