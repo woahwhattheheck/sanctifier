@@ -1,0 +1,28 @@
+{
+  "metadata": {
+    "format": "sanctifier-ci-v1",
+    "project_path": "contracts/my-contract"
+  },
+  "summary": {
+    "total_findings": 2,
+    "has_high": true,
+    "has_critical": false
+  },
+  "findings": {
+    "panic_issues": [
+      {
+        "code": "S004",
+        "issue_type": "unchecked unwrap",
+        "function_name": "deposit",
+        "location": "src/lib.rs:5",
+        "message": "An unchecked unwrap may panic during deposit"
+      }
+    ],
+    "auth_gaps": [
+      {
+        "code": "S001",
+        "function": "withdraw"
+      }
+    ]
+  }
+}

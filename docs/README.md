@@ -23,6 +23,8 @@ New to Sanctifier and adding it to an existing project? Read in this order:
 
 ## Reference
 
+- **[Bitbucket Pipelines + Code Insights](ci/bitbucket.md)** — run Sanctifier
+  in pull requests and publish findings as commit reports and line annotations.
 - **[Positioning](positioning.md)** — where Sanctifier fits relative to a manual
   audit and other tools, with an honest scope and limitations statement.
 - **[Finding Codes](error-codes.md)** — the `S001`…`S016` codes emitted in CLI and
@@ -70,3 +72,4 @@ CLI reference so CI stays green:
 ```bash
 cargo run -p sanctifier-cli -- generate-docs > docs/cli.md
 ```
+
