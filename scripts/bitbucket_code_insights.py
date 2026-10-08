@@ -8,6 +8,7 @@ Without --publish the command outputs deterministic preview payloads.
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -39,6 +40,16 @@ DEFAULT_SEVERITY = {
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
+@lru_cache(maxsize=256)
+def source_line_count(path: Path) -> int:
+    """Count real source lines once per file; never trust scanner line numbers."""
+    try:
+        with path.open("rb") as source:
+            return sum(1 for _ in source)
+    except OSError:
+        return 0
+
+
 def file_line(location: object, scan_root: Path, repo_root: Path):
     """Only attach annotations to source paths demonstrably inside the clone."""
     if not isinstance(location, str):
@@ -59,8 +70,12 @@ def file_line(location: object, scan_root: Path, repo_root: Path):
             relative = resolved.relative_to(resolved_repo)
         except (OSError, ValueError):
             continue
-        if resolved.is_file():
-            return relative.as_posix(), int(line_str)
+        # Existing paths can still contain impossible line numbers, which
+        # Bitbucket rejects as invalid annotations. Preserve the finding in
+        # the JSON summary, but never invent a source position.
+        line = int(line_str)
+        if resolved.is_file() and line <= source_line_count(resolved):
+            return relative.as_posix(), line
     return None
 
 
