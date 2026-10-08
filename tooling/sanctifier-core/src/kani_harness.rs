@@ -146,6 +146,23 @@ enum ArgumentKind {
     Vec(String),
 }
 
+fn ensure_soroban_path(path: &syn::Path, expected: &str) -> Result<()> {
+    let segments: Vec<_> = path.segments.iter().collect();
+    let supported =
+        (segments.len() == 1 && segments[0].ident == expected) ||
+        (segments.len() == 2 &&
+            segments[0].ident == "soroban_sdk" &&
+            segments[1].ident == expected);
+    if supported {
+        Ok(())
+    } else {
+        bail!(
+            "{} must be unqualified or explicitly under soroban_sdk in generated standalone harnesses",
+            expected
+        )
+    }
+}
+
 fn classify_type(ty: &Type) -> Result<ArgumentKind> {
     let Type::Path(ty) = ty else {
         bail!("non-path argument type is not supported");
@@ -163,11 +180,26 @@ fn classify_type(ty: &Type) -> Result<ArgumentKind> {
     }
     if no_args {
         return match name.as_str() {
-            "Env" => Ok(ArgumentKind::Env),
-            "Address" => Ok(ArgumentKind::Address),
-            "Bytes" => Ok(ArgumentKind::Bytes),
-            "Symbol" => Ok(ArgumentKind::Symbol),
-            "String" => Ok(ArgumentKind::String),
+            "Env" => {
+                ensure_soroban_path(&ty.path, "Env")?;
+                Ok(ArgumentKind::Env)
+            }
+            "Address" => {
+                ensure_soroban_path(&ty.path, "Address")?;
+                Ok(ArgumentKind::Address)
+            }
+            "Bytes" => {
+                ensure_soroban_path(&ty.path, "Bytes")?;
+                Ok(ArgumentKind::Bytes)
+            }
+            "Symbol" => {
+                ensure_soroban_path(&ty.path, "Symbol")?;
+                Ok(ArgumentKind::Symbol)
+            }
+            "String" => {
+                ensure_soroban_path(&ty.path, "String")?;
+                Ok(ArgumentKind::String)
+            }
             _ => bail!("unsupported type {}", name),
         };
     }
@@ -178,16 +210,22 @@ fn classify_type(ty: &Type) -> Result<ArgumentKind> {
     let first = args.args.first().ok_or_else(|| anyhow!("missing generic"))?;
     match (name.as_str(), first) {
         ("BytesN", GenericArgument::Const(syn::Expr::Lit(expr))) => {
+            ensure_soroban_path(&ty.path, "BytesN")?;
             let syn::Lit::Int(n) = &expr.lit else {
                 bail!("BytesN length must be an integer literal");
             };
             Ok(ArgumentKind::BytesN(n.to_token_stream().to_string()))
         }
         ("BytesN", GenericArgument::Const(_)) => {
+            ensure_soroban_path(&ty.path, "BytesN")?;
             bail!("BytesN length must be an integer literal in generated standalone harnesses")
         }
-        ("Vec", GenericArgument::Type(ty)) => {
-            Ok(ArgumentKind::Vec(ty.to_token_stream().to_string()))
+        ("Vec", GenericArgument::Type(element_ty)) => {
+            ensure_soroban_path(&ty.path, "Vec")?;
+            classify_type(element_ty).context(
+                "Vec element type must be self-contained in generated standalone harnesses"
+            )?;
+            Ok(ArgumentKind::Vec(element_ty.to_token_stream().to_string()))
         }
         _ => bail!("unsupported generic type {}", name),
     }
@@ -230,6 +268,30 @@ mod tests {
     fn refuses_to_generate_a_noncompilable_unsupported_argument() {
         let source = "#[contractimpl] impl Vault { pub fn deposit(x: Option<Address>) {} }";
         assert!(generate_kani_harnesses(source, "vault").is_err());
+    }
+
+    #[test]
+    fn rejects_qualified_host_lookalikes_and_foreign_vec_elements() {
+        for source in [
+            "#[contractimpl] impl Vault { pub fn store(value: std::string::String) {} }",
+            "#[contractimpl] impl Vault { pub fn store(values: std::vec::Vec<Address>) {} }",
+            "#[contractimpl] impl Vault { pub fn store(values: Vec<foreign::Address>) {} }",
+        ] {
+            assert!(generate_kani_harnesses(source, "vault").is_err());
+        }
+
+        let supported = r#"
+            #[contractimpl]
+            impl Vault {
+                pub fn store(
+                    value: soroban_sdk::String,
+                    values: soroban_sdk::Vec<soroban_sdk::Address>,
+                ) {}
+            }
+        "#;
+        let actual = generate_kani_harnesses(supported, "vault").unwrap();
+        assert!(actual.contains("soroban_sdk :: String"));
+        assert!(actual.contains("soroban_sdk :: Vec < soroban_sdk :: Address >"));
     }
 
     #[test]
