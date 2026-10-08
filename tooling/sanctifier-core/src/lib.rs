@@ -412,8 +412,8 @@ impl SanctifyConfig {
         self.ignore_paths.iter().any(|fragment| {
             let fragment = fragment.replace('\\', "/");
             !fragment.is_empty()
-                && (segments.iter().any(|segment| segment.contains(&fragment))
-                    || (!dir_path.is_empty() && dir_path.ends_with(&fragment)))
+                && (segments.iter().any(|segment| segment.contains(fragment.as_str()))
+                    || (!dir_path.is_empty() && dir_path.ends_with(fragment.as_str())))
         })
     }
 
