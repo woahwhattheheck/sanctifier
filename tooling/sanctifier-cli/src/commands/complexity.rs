@@ -1,6 +1,12 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
-use sanctifier_core::complexity::{analyze_source, ContractMetrics};
+// Reuse the already-implemented core complexity engine without duplicating
+// its AST scoring. That source has no public crate export yet.
+#[path = "../../../sanctifier-core/src/complexity.rs"]
+mod core_complexity;
+use core_complexity::{analyze_complexity, ContractMetrics};
+use syn::spanned::Spanned;
+use syn::visit::Visit;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,8 +46,20 @@ pub fn exec(args: ComplexityArgs) -> Result<()> {
     for path in &files {
         let source = fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let mut metrics = analyze_source(&source, &path.display().to_string())
+        let ast = syn::parse_file(&source)
             .with_context(|| format!("parsing {}", path.display()))?;
+        let mut metrics = analyze_complexity(&ast, &path.display().to_string());
+        // The legacy core parser measured quote!(tokens).to_string().lines(),
+        // which strips whitespace and reports LOC=1 for every function.
+        // Match its visitor order and restore physical source-span lengths.
+        let mut spans = FunctionSpans::default();
+        spans.visit_file(&ast);
+        if metrics.functions.len() != spans.lines.len() {
+            bail!("function source-span mismatch for {}", path.display());
+        }
+        for (function, physical_lines) in metrics.functions.iter_mut().zip(spans.lines) {
+            function.loc = physical_lines;
+        }
         for f in &mut metrics.functions {
             f.warnings.clear();
             if f.cyclomatic_complexity > args.max_cyclomatic {
@@ -125,4 +143,39 @@ fn collect_rs_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         collect_rs_files(&child, out)?;
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct FunctionSpans {
+    lines: Vec<usize>,
+}
+
+impl<'ast> Visit<'ast> for FunctionSpans {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        if matches!(node.vis, syn::Visibility::Public(_)) {
+            self.lines.push(node.span().end().line.saturating_sub(node.span().start().line) + 1);
+        }
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.lines.push(node.span().end().line.saturating_sub(node.span().start().line) + 1);
+        syn::visit::visit_impl_item_fn(self, node);
+    }
+}
+
+#[cfg(test)]
+mod issue_696_regression {
+    use super::*;
+    #[test]
+    fn nested_function_spans_preserve_actual_line_counts() {
+        let source = "pub fn first() {\n    if true {\n        work();\n    }\n}\n\npub fn second() {}\n";
+        let parsed = syn::parse_file(source).unwrap();
+        let mut spans = FunctionSpans::default();
+        spans.visit_file(&parsed);
+        assert_eq!(spans.lines, vec![5, 1]);
+        let metrics = analyze_complexity(&parsed, "example.rs");
+        assert_eq!(metrics.functions.len(), 2);
+        assert_eq!(metrics.functions[0].cyclomatic_complexity, 2);
+    }
 }
