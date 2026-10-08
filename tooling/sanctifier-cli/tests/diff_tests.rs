@@ -198,6 +198,18 @@ fn test_analyze_since_matches_moved_findings_and_flags_new_ones() {
     assert_eq!(result["summary"]["has_new_findings"], false);
     assert_eq!(result["persisting"].as_array().unwrap().len(), 0);
 
+    // A nested crate path must compare to the same subpath in the base
+    // worktree, rather than scanning unrelated repository files.
+    let scoped = Command::cargo_bin("sanctifier")
+        .unwrap()
+        .args(["analyze", "--since", "HEAD", "--format", "json"])
+        .arg(repo.join("src"))
+        .output()
+        .unwrap();
+    assert!(scoped.status.success(), "nested path should have no new findings");
+    let scoped_result: serde_json::Value = serde_json::from_slice(&scoped.stdout).unwrap();
+    assert_eq!(scoped_result["summary"]["added_count"], 0);
+
     // Introduce another unsafe call without removing the inherited one.
     fs::write(
         repo.join("src/lib.rs"),
