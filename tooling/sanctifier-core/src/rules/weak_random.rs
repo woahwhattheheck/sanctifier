@@ -120,6 +120,66 @@ impl WeakRandomVisitor {
 }
 
 impl<'ast> Visit<'ast> for WeakRandomVisitor {
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        self.visit_expr(&node.cond);
+        // A clean assignment in a conditional branch cannot erase the
+        // ledger-derived value on the path where that branch is not taken.
+        let before_tainted = self.tainted.clone();
+        let before_reduced = self.reduced.clone();
+
+        self.visit_block(&node.then_branch);
+        let then_tainted = self.tainted.clone();
+        let then_reduced = self.reduced.clone();
+
+        self.tainted = before_tainted;
+        self.reduced = before_reduced;
+        if let Some((_, alternative)) = &node.else_branch {
+            self.visit_expr(alternative);
+        }
+        // Merge possible paths instead of applying one branch's side effects
+        // to the other. A missing else is the original, unchanged state.
+        self.tainted.extend(then_tainted);
+        self.reduced.extend(then_reduced);
+    }
+
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        self.visit_expr(&node.expr);
+        let before_tainted = self.tainted.clone();
+        let before_reduced = self.reduced.clone();
+        let mut after_tainted = HashSet::new();
+        let mut after_reduced = HashSet::new();
+
+        for arm in &node.arms {
+            self.tainted = before_tainted.clone();
+            self.reduced = before_reduced.clone();
+            self.visit_arm(arm);
+            after_tainted.extend(self.tainted.iter().cloned());
+            after_reduced.extend(self.reduced.iter().cloned());
+        }
+        self.tainted = after_tainted;
+        self.reduced = after_reduced;
+    }
+
+    fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+        self.visit_expr(&node.cond);
+        let before_tainted = self.tainted.clone();
+        let before_reduced = self.reduced.clone();
+        self.visit_block(&node.body);
+        // A while body can execute zero times.
+        self.tainted.extend(before_tainted);
+        self.reduced.extend(before_reduced);
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.visit_expr(&node.expr);
+        let before_tainted = self.tainted.clone();
+        let before_reduced = self.reduced.clone();
+        self.visit_block(&node.body);
+        // A collection iteration can execute zero times.
+        self.tainted.extend(before_tainted);
+        self.reduced.extend(before_reduced);
+    }
+
     fn visit_local(&mut self, node: &'ast syn::Local) {
         if let Some(name) = pat_ident(&node.pat) {
             // A new binding with the same identifier shadows the old one. Compute
@@ -430,5 +490,44 @@ fn choose(env: Env, players: Vec<u64>, reveal: u64) -> u64 {
 "#;
 
         assert!(WeakRandomRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn conditional_clean_assignment_does_not_hide_ledger_selection() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>, reveal: u64, prefer_reveal: bool) -> u64 {
+    let mut idx = env.ledger().timestamp() % players.len() as u64;
+    if prefer_reveal { idx = reveal % players.len() as u64; }
+    players[idx as usize]
+}
+"#;
+        assert_eq!(WeakRandomRule::new().check(source).len(), 1);
+    }
+
+    #[test]
+    fn fully_overwritten_if_else_is_not_tainted() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>, a: u64, b: u64, flag: bool) -> u64 {
+    let mut idx = env.ledger().timestamp() % players.len() as u64;
+    if flag { idx = a % players.len() as u64; }
+    else { idx = b % players.len() as u64; }
+    players[idx as usize]
+}
+"#;
+        assert!(WeakRandomRule::new().check(source).is_empty());
+    }
+
+    #[test]
+    fn conditional_match_and_zero_iteration_loops_preserve_taint() {
+        let source = r#"
+fn choose(env: Env, players: Vec<u64>, reveal: u64, mode: u32) -> u64 {
+    let mut idx = env.ledger().sequence() % players.len() as u64;
+    match mode { 0 => { idx = reveal % players.len() as u64; }, _ => {} };
+    while mode == 1 { idx = reveal % players.len() as u64; }
+    for _ in 0..mode { idx = reveal % players.len() as u64; }
+    players[idx as usize]
+}
+"#;
+        assert_eq!(WeakRandomRule::new().check(source).len(), 1);
     }
 }
