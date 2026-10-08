@@ -41,7 +41,7 @@ processing into separately metered entrypoint calls. A visible bounded
 iterator is another option when processing a prefix is semantically safe:
 
 ```rust
-const MAX_PAGE_SIZE: u32 = 100;
+const MAX_PAGE_SIZE: usize = 100;
 
 #[contractimpl]
 impl Payroll {
