@@ -33,7 +33,7 @@ pipelines:
       - step:
           name: Sanctifier security findings
           script:
-            - apt-get update && apt-get install -y --no-install-recommends python3 libz3-dev libdbus-1-dev pkg-config
+            - apt-get update && apt-get install -y --no-install-recommends python3 clang libclang-dev libz3-dev libdbus-1-dev pkg-config
             - git clone --depth 1 https://github.com/Centurylong/sanctifier.git /tmp/sanctifier-src
             - cargo install --locked --path /tmp/sanctifier-src/tooling/sanctifier-cli
             - |
@@ -49,9 +49,12 @@ pipelines:
 ~~~
 
 The image pins Rust 1.85.0 to match Sanctifier's supported CI toolchain and its
-`ethnum` dependency. The install step includes native Z3, D-Bus, and
-`pkg-config` development prerequisites and installs the CLI from its package
-directory. Python alone is insufficient in the base Rust container.
+`ethnum` dependency. The installation includes native Z3, D-Bus, pkg-config,
+and **Clang/libclang development libraries**, needed by the CLI's older
+`z3-sys` bindgen build in this minimal container. It installs the CLI from
+its actual nested package directory. Without `libclang-dev`, a fresh
+`rust:1.85.0-bookworm` runner can fail before the security scan starts.
+Python alone is insufficient in the base Rust container.
 
 ## Authentication and API behavior
 
