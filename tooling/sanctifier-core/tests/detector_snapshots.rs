@@ -24,6 +24,7 @@ use sanctifier_core::rules::{
     excessive_clone::ExcessiveCloneRule, fee_rounding::FeeRoundingRule,
     hardcoded_addr::HardcodedAddrRule, init_hardcoded_admin::InitHardcodedAdminRule,
     ledger_seconds::LedgerSecondsRule, ledger_size::LedgerSizeRule, missing_ttl::MissingTtlRule,
+    narrowing_cast::NarrowingCastRule,
     panic_detection::PanicDetectionRule, sanct_unwrap::SanctUnwrapRule,
     sep41_allowance_decrement::Sep41AllowanceDecrementRule,
     sep41_approval_expiration::Sep41ApprovalExpirationRule, shift_overflow::ShiftOverflowRule,
@@ -293,6 +294,15 @@ fn snapshot_tier_boundary_off_by_one() {
         "tier_boundary_off_by_one",
         &TierBoundaryOffByOneRule::new(),
         include_str!("fixtures/detectors/tier_boundary_off_by_one.rs"),
+    );
+}
+
+#[test]
+fn snapshot_narrowing_cast() {
+    assert_detector_snapshot(
+        "narrowing_cast",
+        &NarrowingCastRule::new(),
+        include_str!("fixtures/detectors/narrowing_cast.rs"),
     );
 }
 
