@@ -211,4 +211,21 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(found[0].message.contains("u128 to u64"));
     }
+
+    #[test]
+    fn inline_golden_findings_for_value_narrowing() {
+        let fixture = "fn payout(amount: i128) -> u64 {\n    amount as u64\n}\n\nfn escrow(deposited: u128) -> u32 {\n    deposited as u32\n}\n";
+        insta::assert_yaml_snapshot!(NarrowingCastRule::new().check(fixture), @r###"
+- rule_name: SANCT_NARROWING_CAST
+  severity: Warning
+  message: "Integer cast from i128 to u64 using 'as' can wrap, truncate or change sign"
+  location: "payout:2"
+  suggestion: "Replace 'as' with checked TryInto::<u64>::try_into(value) and handle the conversion error"
+- rule_name: SANCT_NARROWING_CAST
+  severity: Warning
+  message: "Integer cast from u128 to u32 using 'as' can wrap, truncate or change sign"
+  location: "escrow:6"
+  suggestion: "Replace 'as' with checked TryInto::<u32>::try_into(value) and handle the conversion error"
+"###);
+    }
 }
