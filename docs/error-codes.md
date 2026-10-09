@@ -8,6 +8,7 @@ the fix, and references.
 
 | Code | Category | Meaning | Detector page |
 |------|----------|---------|---------------|
+| `SANCT_NARROWING_CAST` | arithmetic | Narrowing or sign-changing integer cast using `as` may truncate or wrap value-carrying amounts; prefer checked `try_into` | [`narrowing_cast`](detectors/narrowing_cast.md) |
 | `S001` | authentication | Missing authentication guard in a state-mutating function | [`auth_gap`](detectors/auth_gap.md) |
 | `S002` | panic_handling | `panic!` / `unwrap` / `expect` usage that may abort execution | [`panic_detection`](detectors/panic_detection.md) |
 | `S003` | arithmetic | Unchecked arithmetic with overflow/underflow risk | [`arithmetic_overflow`](detectors/arithmetic_overflow.md) |
