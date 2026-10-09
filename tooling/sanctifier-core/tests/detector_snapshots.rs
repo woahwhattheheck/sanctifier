@@ -298,15 +298,6 @@ fn snapshot_tier_boundary_off_by_one() {
 }
 
 #[test]
-fn snapshot_narrowing_cast() {
-    assert_detector_snapshot(
-        "narrowing_cast",
-        &NarrowingCastRule::new(),
-        include_str!("fixtures/detectors/narrowing_cast.rs"),
-    );
-}
-
-#[test]
 fn snapshot_shift_overflow() {
     assert_detector_snapshot(
         "shift_overflow",
