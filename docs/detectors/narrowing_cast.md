@@ -39,6 +39,6 @@ are ignored. This is a conservative syntactic check, not a full data-flow proof.
 
 ## Validation
 
-The focused `narrowing_cast` fixture includes signed-to-unsigned truncation,
-unsigned narrowing, safe widening and a fitting integer literal. The golden
-detector snapshot is in `tooling/sanctifier-core/tests/snapshots/`.
+The focused rule tests cover signed-to-unsigned truncation, unsigned narrowing,
+safe widening and fitting integer literals. The reviewed insta golden snapshot
+is inline in tooling/sanctifier-core/src/rules/narrowing_cast.rs.
